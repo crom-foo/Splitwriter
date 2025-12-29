@@ -97,9 +97,10 @@ function stripNonProjectPrefs(p: any): any {
   // 1) workingFolder 제거
   delete rest.workingFolder;
 
-  // 2) autosave / theme 계열 키 제거
+  // 2) autosave / theme / locale 계열 키 제거
   for (const key of Object.keys(rest)) {
     const lower = key.toLowerCase();
+
     if (lower.startsWith("theme")) {
       delete rest[key];
       continue;
@@ -108,10 +109,14 @@ function stripNonProjectPrefs(p: any): any {
       delete rest[key];
       continue;
     }
+
+    // ✅ 국가/입력 관련 전역값은 프로젝트에 저장하지 않기
+    if (lower === "language" || lower === "inputlocale" || lower.endsWith("locale")) {
+      delete rest[key];
+      continue;
+    }
   }
 
-  // NOTE: accentColor, typeface, writingGoal, curlyBraces 등은
-  //       그대로 남겨서 swon 에 저장되도록 둔다.
   return rest;
 }
 
@@ -438,7 +443,8 @@ export function setupSwonIO(opts: Opts): SwonIO {
         filters: [{ name: "Splitwriter Project", extensions: ["swon", "json"] }],
       });
       if (typeof picked !== "string") return; // canceled
-      const text = await readTextFile(picked);
+      const raw = await readTextFile(picked);
+      const text = raw.replace(/^\uFEFF/, "");
       const data = JSON.parse(text) as SwonFile;
       if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
       applySwon(data, /* bump */ true);
@@ -469,7 +475,8 @@ export function setupSwonIO(opts: Opts): SwonIO {
           ],
         });
         const file = await handle.getFile();
-        const text = await file.text();
+        const raw = await file.text();
+        const text = raw.replace(/^\uFEFF/, "");
         const data = JSON.parse(text) as SwonFile;
         if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
         applySwon(data, /* bump */ true);
@@ -492,7 +499,8 @@ export function setupSwonIO(opts: Opts): SwonIO {
     inp.onchange = async () => {
       const f = inp.files?.[0];
       if (!f) return;
-      const text = await f.text();
+      const raw = await f.text();
+      const text = raw.replace(/^\uFEFF/, "");
       const data = JSON.parse(text) as SwonFile;
       if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
       applySwon(data, /* bump */ true);
@@ -510,19 +518,25 @@ export function setupSwonIO(opts: Opts): SwonIO {
     if (!(window as any).__TAURI_IPC__) {
       return open();
     }
+
     const { readTextFile } = await import("@tauri-apps/api/fs");
-    const text = await readTextFile(absPath);
+    const raw = await readTextFile(absPath);
+    const text = raw.replace(/^\uFEFF/, "");
     const data = JSON.parse(text) as SwonFile;
+
     if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
+
     applySwon(data, /* bump */ true);
     diskPath = absPath;
     fileHandle = null;
+
     try {
       fileName =
         absPath.split(/[\\/]/).pop()?.replace(/\.swon$/i, "") ||
         data.title ||
         "untitled";
     } catch {}
+
     syncCurrentFileGlobals();
     opts.notify(`${fileName}.swon loaded`, "info", 1600);
   }

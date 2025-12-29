@@ -9,6 +9,8 @@ import { DEFAULT_PREFS, type Preferences, type FontTriplet, SYSTEM_STACK, SYSTEM
 import { emit } from "@tauri-apps/api/event";
 import { applyAccentTokens } from "../runtime/accent";
 import curlyIconUrl from "../icons/curly.png";
+import { INPUT_LOCALES } from "../runtime/locale";
+import { applyInputLocaleDom } from "../runtime/applyLocale";
 
 export const PREFS_STORAGE_KEY = "splitwriter:preferences:v4";
 const FALLBACK_ACCENT = "#2AA4FF";
@@ -69,6 +71,7 @@ export function usePreferences() {
           writingGoal: parsed.writingGoal ?? DEFAULT_PREFS.writingGoal,
           bracket: parsed.bracket ?? DEFAULT_PREFS.bracket,
           theme: (parsed as any)?.theme ?? DEFAULT_PREFS.theme,
+          inputLocale: (parsed as any)?.inputLocale ?? (DEFAULT_PREFS as any).inputLocale ?? "auto",
         };
         merged.typeface = normalizeTypeface(merged.typeface);
         return merged;
@@ -82,6 +85,7 @@ export function usePreferences() {
           ...DEFAULT_PREFS,
           ...p,
           theme: p.theme ?? "dark",
+          inputLocale: (p as any)?.inputLocale ?? (DEFAULT_PREFS as any).inputLocale ?? "auto",
           typeface: {
             headline: tf.headline ?? DEFAULT_PREFS.typeface.headline,
             body: tf.body ?? DEFAULT_PREFS.typeface.body,
@@ -210,6 +214,7 @@ export function usePreferences() {
       writingGoal: prefs.writingGoal,
       bracket: prefs.bracket,
       theme: prefs.theme,
+      inputLocale: (prefs as any).inputLocale,
     };
     try {
       localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toStore));
@@ -232,6 +237,10 @@ export function usePreferences() {
   }, [prefs.theme]);
 
   useEffect(() => {
+    applyInputLocaleDom((prefs as any).inputLocale);
+  }, [(prefs as any).inputLocale]);
+
+  useEffect(() => {
     let cancelled = false;
     (async () => {
       const fromFile = await readShadowPrefs();
@@ -247,6 +256,7 @@ export function usePreferences() {
             autosave: p.autosave ?? prev.autosave,
             autosaveIntervalSec: p.autosaveIntervalSec ?? prev.autosaveIntervalSec,
             theme: p.theme ?? prev.theme,
+            inputLocale: (p as any).inputLocale ?? (prev as any).inputLocale ?? (DEFAULT_PREFS as any).inputLocale ?? "auto",
             typeface: normalizeTypeface({
               headline: p.typeface?.headline ?? prev.typeface.headline,
               body: p.typeface?.body ?? prev.typeface.body,
@@ -285,6 +295,26 @@ const IcFolder = (p: React.SVGProps<SVGSVGElement>) => (
       fill="currentColor"
       d="M3 6.75A1.75 1.75 0 0 1 4.75 5h4.19c.46 0 .9.18 1.22.5l.56.56c.33.33.77.51 1.23.51h5.55A1.75 1.75 0 0 1 19.25 9v8.25A1.75 1.75 0 0 1 17.5 19h-13A1.75 1.75 0 0 1 2.75 17.25v-9.5Z"
     />
+  </svg>
+);
+const IcGlobe = (p: React.SVGProps<SVGSVGElement>) => (
+  <svg
+    viewBox="0 0 24 24"
+    aria-hidden
+    width={16}
+    height={16}
+    fill="none"
+    stroke="currentColor"
+    strokeWidth={1.75}
+    strokeLinecap="round"
+    strokeLinejoin="round"
+    shapeRendering="geometricPrecision"
+    {...p}
+  >
+    <circle cx="12" cy="12" r="9" />
+    <path d="M3 12h18" />
+    <path d="M12 3c-2.6 2.7-4 5.9-4 9s1.4 6.3 4 9" />
+    <path d="M12 3c2.6 2.7 4 5.9 4 9s-1.4 6.3-4 9" />
   </svg>
 );
 const IcClock = (p: React.SVGProps<SVGSVGElement>) => (
@@ -358,6 +388,7 @@ export async function bootstrapPrefsOnAppStart() {
       // Merge other optional fields (e.g., theme/language) here when needed
       theme: fromShadow?.theme ?? DEFAULT_PREFS.theme,
       language: fromShadow?.language ?? (DEFAULT_PREFS as any).language,
+      inputLocale: (fromShadow as any)?.inputLocale ?? (DEFAULT_PREFS as any).inputLocale ?? "auto",
     };
     merged.typeface = normalizeTypeface(merged.typeface);
 
@@ -372,6 +403,7 @@ export async function bootstrapPrefsOnAppStart() {
         writingGoal: merged.writingGoal,
         bracket: merged.bracket,
         theme: merged.theme,
+        inputLocale: (merged as any).inputLocale,
       };
       localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toStore));
     } catch {}
@@ -383,6 +415,7 @@ export async function bootstrapPrefsOnAppStart() {
     const acc = validateHex(merged.accentColor) || FALLBACK_ACCENT;
     applyAccentTokens(acc);
     applyThemeDom(merged.theme);
+    applyInputLocaleDom((merged as any).inputLocale);
 
     try {
       await emit("prefs-changed", {});
@@ -577,6 +610,7 @@ function Select({
   children,
   disabled,
   style,
+  className = "",
   ...rest
 }: React.SelectHTMLAttributes<HTMLSelectElement>) {
   return (
@@ -762,6 +796,7 @@ export function PreferenceModal({
   const [presetItems, setPresetItems] = React.useState<string[]>([]);
   const presetBtnRef = React.useRef<HTMLButtonElement | null>(null);
   const presetMenuRef = React.useRef<HTMLDivElement | null>(null);
+  
 
   const [nameDlg, setNameDlg] = React.useState<{ open: boolean; value: string }>({
     open: false,
@@ -797,6 +832,7 @@ export function PreferenceModal({
       writingGoal: p.writingGoal,
       bracket: p.bracket,
       theme: p.theme,
+      inputLocale: (p as any).inputLocale,
     };
   }
 
@@ -901,6 +937,7 @@ export function PreferenceModal({
     // 프리셋에 저장된 Theme / Accent 를 즉시 DOM에 반영
     applyThemeDom(merged.theme);
     applyAccentTokens(validateHex(merged.accentColor) || FALLBACK_ACCENT);
+    applyInputLocaleDom((merged as any).inputLocale ?? "auto");
 
     onChange(merged);
     setPresetOpen(false);
@@ -950,6 +987,7 @@ export function PreferenceModal({
 
     applyThemeDom(next.theme);
     applyAccentTokens(validateHex(next.accentColor) || FALLBACK_ACCENT);
+    applyInputLocaleDom((next as any).inputLocale ?? "auto");
 
     set(next);
     setPresetOpen(false);
@@ -1121,79 +1159,110 @@ export function PreferenceModal({
                 </div>
               </div>
 
-              <div className="relative flex items-center gap-2">
-                <button
-                  ref={presetBtnRef}
-                  className="w-[96px] py-1.5 rounded-lg text-xs border text-center"
-                  style={{
-                    background: "var(--btn-bg)",
-                    borderColor: "var(--border)",
-                    color: "var(--text-1)",
-                  }}
-                  onClick={openPresetMenu}
-                  title="Presets"
-                >
-                  Presets ▾
-                </button>
-
-                {presetOpen && (
-                  <div
-                    ref={presetMenuRef}
-                    className="absolute right-0 top-full mt-2 w-60 rounded-lg border shadow-xl z-50"
+              <div className="flex items-center gap-2">
+                {/* locale select + icon */}
+                <div className="relative w-[170px]">
+                  <Select
+                    value={String((prefs as any).inputLocale || "auto")}
+                    onChange={(e) => set({ inputLocale: e.target.value } as any)}
                     style={{
-                      background: "var(--panel)",
+                      paddingLeft: 28,
+                      height: 32,          // Presets랑 키 맞추기
+                      paddingTop: 6,
+                      paddingBottom: 6,
+                      fontSize: 12,
+                      lineHeight: "16px",
+                    }}
+                    title="Input language (System/Auto recommended)"
+                  >
+                    {INPUT_LOCALES.map((opt) => (
+                      <Option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </Option>
+                    ))}
+                  </Select>
+
+                  <div className="absolute left-2 inset-y-0 flex items-center pointer-events-none z-10 opacity-80">
+                    <IcGlobe style={{ color: "var(--select-fg)" }} />
+                  </div>
+                </div>
+
+                {/* presets button + menu (menu anchors to this relative box) */}
+                <div className="relative">
+                  <button
+                    ref={presetBtnRef}
+                    className="w-[96px] py-1.5 rounded-lg text-xs border text-center"
+                    style={{
+                      background: "var(--btn-bg)",
                       borderColor: "var(--border)",
                       color: "var(--text-1)",
                     }}
+                    onClick={openPresetMenu}
+                    title="Presets"
                   >
-                    <div className="py-1 text-xs">
-                      <div className="px-3 py-1.5 opacity-60">Load preset</div>
-                      {presetItems.length === 0 ? (
-                        <div className="px-3 py-1.5 opacity-60">No presets</div>
-                      ) : (
-                        presetItems.slice(0, 10).map((name) => (
-                          <button
-                            key={name}
-                            className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
-                            onClick={() => handleLoadPreset(name)}
-                          >
-                            {name}
-                          </button>
-                        ))
-                      )}
-                      <div
-                        className="my-1 border-t"
-                        style={{ borderColor: "var(--divider, rgba(158,162,170,.18))" }}
-                      />
-                      <button
-                        className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
-                        onClick={handleSavePreset}
-                      >
-                        Save preset…
-                      </button>
-                      <button
-                        className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
-                        onClick={handleApplyDefault}
-                      >
-                        Default preset
-                      </button>
-                      <div
-                        className="my-1 border-t"
-                        style={{ borderColor: "var(--divider, rgba(158,162,170,.18))" }}
-                      />
-                      <button
-                        className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
-                        onClick={async () => {
-                          await revealPresetFolder();
-                          setPresetOpen(false);
-                        }}
-                      >
-                        Open presets folder
-                      </button>
-                    </div>
-                  </div>
-                )}
+                    Presets ▾
+                  </button>
 
+                  {presetOpen && (
+                    <div
+                      ref={presetMenuRef}
+                      className="absolute right-0 top-full mt-2 w-60 rounded-lg border shadow-xl z-50"
+                      style={{
+                        background: "var(--panel)",
+                        borderColor: "var(--border)",
+                        color: "var(--text-1)",
+                      }}
+                    >
+                      <div className="py-1 text-xs">
+                        <div className="px-3 py-1.5 opacity-60">Load preset</div>
+                        {presetItems.length === 0 ? (
+                          <div className="px-3 py-1.5 opacity-60">No presets</div>
+                        ) : (
+                          presetItems.slice(0, 10).map((name) => (
+                            <button
+                              key={name}
+                              className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
+                              onClick={() => handleLoadPreset(name)}
+                            >
+                              {name}
+                            </button>
+                          ))
+                        )}
+                        <div
+                          className="my-1 border-t"
+                          style={{ borderColor: "var(--divider, rgba(158,162,170,.18))" }}
+                        />
+                        <button
+                          className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
+                          onClick={handleSavePreset}
+                        >
+                          Save preset…
+                        </button>
+                        <button
+                          className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
+                          onClick={handleApplyDefault}
+                        >
+                          Default preset
+                        </button>
+                        <div
+                          className="my-1 border-t"
+                          style={{ borderColor: "var(--divider, rgba(158,162,170,.18))" }}
+                        />
+                        <button
+                          className="w-full text-left px-3 py-1.5 hover:bg-[rgba(255,255,255,0.06)]"
+                          onClick={async () => {
+                            await revealPresetFolder();
+                            setPresetOpen(false);
+                          }}
+                        >
+                          Open presets folder
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* close */}
                 <button
                   className="text-sm px-2 py-1 rounded-md hover:bg-[rgba(255,255,255,0.06)]"
                   style={{ color: "var(--text-2)" }}

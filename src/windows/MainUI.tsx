@@ -100,7 +100,7 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
 
 // --- AppVersion (UI 표기: Tauri면 실제 버전, 웹이면 fallback) ---
 const AppVersion: React.FC<{ fallback?: string }> = ({
-  fallback = "v0.9.3-beta.4",
+  fallback = "v0.9.9-beta.5",
 }) => {
   const [v, setV] = React.useState<string>(fallback);
 
@@ -2927,7 +2927,7 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
           }}
         >
           <div style={{ fontSize: 9, opacity: 0.8 }}>
-            <AppVersion fallback="v0.9.3-beta.4" />
+            <AppVersion fallback="v0.9.9-beta.5" />
           </div>
           <div style={{ fontSize: 9, opacity: 0.7 }}>Created by Crom &amp; GPT</div>
         </div>

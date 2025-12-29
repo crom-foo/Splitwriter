@@ -320,7 +320,7 @@ function getStyles(opts: { color?: string; inset?: Inset; toolbarH: number }) {
     },
     editorWrap: {
       position: "absolute" as const,
-      top: `calc(${topBase + toolbarH + 1}px + var(--pad-top, 20px))`,
+      top:        `calc(${topBase + toolbarH + 1}px + var(--pad-top, 20px))`,
       left: inset?.left ?? 0,
       right: 0,
       bottom: 0,
@@ -336,7 +336,7 @@ function getStyles(opts: { color?: string; inset?: Inset; toolbarH: number }) {
       width: "var(--col-width-pct, 94%)",
       maxWidth: "var(--content-max, 820px)",
       margin: "0 auto",
-      padding: "var(--pad-y, 18px) var(--pad-x, 24px)",
+      padding:    "var(--pad-y, 18px) var(--pad-x, 24px)",
       transition: "none",
       willChange: "width,left",
       overflowAnchor: "none" as any, 
@@ -487,6 +487,38 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   }, [effectiveId]);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const sc = scrollerRef.current;
+    const wrap = wrapRef.current;
+    if (!sc || !wrap) return;
+
+    const clamp = (v: number, a: number, b: number) => Math.max(a, Math.min(v, b));
+
+    const apply = (w: number, h: number) => {
+      // “1100x720 기준 px”을 패널 크기에 비례해서 환산
+      const padTop = clamp((h * 20) / 720, 12, 40);
+      const padY   = clamp((h * 18) / 720, 10, 36);
+      const padX   = clamp((w * 24) / 1100, 14, 48);
+
+      wrap.style.setProperty("--pad-top", `${padTop}px`);
+      wrap.style.setProperty("--pad-y", `${padY}px`);
+      wrap.style.setProperty("--pad-x", `${padX}px`);
+    };
+
+    // 초기 1회
+    const r0 = sc.getBoundingClientRect();
+    apply(r0.width, r0.height);
+
+    const ro = new ResizeObserver((entries) => {
+      const r = entries[0]?.contentRect;
+      if (!r) return;
+      apply(r.width, r.height);
+    });
+
+    ro.observe(sc);
+    return () => ro.disconnect();
+  }, []);
 
   const TW_TARGET = 0.58;
   const TW_DEAD   = 24;

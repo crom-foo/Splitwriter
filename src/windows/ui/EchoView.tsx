@@ -62,24 +62,132 @@ const CLOSERS = `”’"'\\)\\]\\}〉》」『】>`;
 /** Split text into displayable chunks (rough sentence/phrase units). */
 function tokenizeEchoText(src?: string): string[] {
   if (!src) return [];
+
   const text = src.replace(/\r\n/g, "\n").replace(/\t/g, " ");
   const paras = text
     .split(/\n+/)
     .map((s) => s.trim())
     .filter(Boolean);
 
+  // 끝 문장 부호 (여기 기준으로 쪼갬)
+  const END = new Set([".", "?", "!", "…"]);
+
+  // 문장부호 뒤에 붙는 닫힘 문자들(따옴표/괄호 등)은 같이 붙여서 한 덩어리로 만듦
+  const CLOSER = new Set(['”', '’', '"', "'", ")", "]", "}", "〉", "》", "」", "』", "】", ">"]);
+
+  // 스마트 따옴표/동양권 따옴표 페어
+  const OPEN_TO_CLOSE: Record<string, string> = {
+    "“": "”",
+    "‘": "’",
+    "「": "」",
+    "『": "』",
+    "〈": "〉",
+    "《": "》",
+  };
+
   const out: string[] = [];
+
   for (const p of paras) {
-    const re = new RegExp(`(.+?${END_PUNCT.source}(?:[${CLOSERS}])?)`, "g");
-    let m: RegExpExecArray | null,
-      last = 0;
-    while ((m = re.exec(p)) !== null) {
-      out.push(m[1].trim());
-      last = re.lastIndex;
+    let buf = "";
+
+    // quote stack: 닫힘 문자를 쌓아두고, 그 안에서는 END를 무시한다
+    const stack: string[] = [];
+    const hadEndInThisQuote: boolean[] = [];
+
+    const pushBuf = () => {
+      const s = buf.trim();
+      if (s) out.push(s);
+      buf = "";
+    };
+
+    const isWordApostrophe = (s: string, i: number) => {
+      if (s[i] !== "'") return false;
+      if (i <= 0 || i + 1 >= s.length) return false;
+      return /[0-9A-Za-z]/.test(s[i - 1]) && /[0-9A-Za-z]/.test(s[i + 1]);
+    };
+
+    for (let i = 0; i < p.length; i++) {
+      const ch = p[i];
+      buf += ch;
+
+      // --- 따옴표/인용부 처리(우선순위) ---
+      // 1) 여는 따옴표면 스택에 "기대 닫힘 따옴표"를 넣는다
+      const mapped = OPEN_TO_CLOSE[ch];
+      if (mapped) {
+        stack.push(mapped);
+        hadEndInThisQuote.push(false);
+        continue;
+      }
+
+      // 2) ASCII 따옴표(" / ')는 토글(단, 영어 축약 '는 제외)
+      if ((ch === '"' || ch === "'") && !isWordApostrophe(p, i)) {
+        if (stack.length && stack[stack.length - 1] === ch) {
+          const had = hadEndInThisQuote.pop() ?? false;
+          stack.pop();
+
+          // 따옴표 안에 END가 있었으면 "닫는 따옴표에서" 한 번에 끊기
+          if (stack.length === 0 && had) {
+            let j = i + 1;
+            while (j < p.length && CLOSER.has(p[j])) {
+              buf += p[j];
+              j++;
+            }
+            pushBuf();
+            i = j - 1;
+          }
+        } else {
+          stack.push(ch);
+          hadEndInThisQuote.push(false);
+        }
+        continue;
+      }
+
+      // 3) 스택의 기대 닫힘과 일치하면 닫힘으로 처리
+      if (stack.length && ch === stack[stack.length - 1]) {
+        const had = hadEndInThisQuote.pop() ?? false;
+        stack.pop();
+
+        if (stack.length === 0 && had) {
+          let j = i + 1;
+          while (j < p.length && CLOSER.has(p[j])) {
+            buf += p[j];
+            j++;
+          }
+          pushBuf();
+          i = j - 1;
+        }
+        continue;
+      }
+
+      // --- 문장부호 처리 ---
+      if (stack.length) {
+        // 따옴표 안이면 END를 "기록만" 하고 쪼개진 않음
+        if (END.has(ch)) {
+          hadEndInThisQuote[hadEndInThisQuote.length - 1] = true;
+        }
+        continue;
+      }
+
+      // 따옴표 밖이면 END에서 끊음 (연속 문장부호 + 닫힘문자까지 흡수)
+      if (END.has(ch)) {
+        let j = i + 1;
+        while (j < p.length && END.has(p[j])) {
+          buf += p[j];
+          j++;
+        }
+        while (j < p.length && CLOSER.has(p[j])) {
+          buf += p[j];
+          j++;
+        }
+        pushBuf();
+        i = j - 1;
+        continue;
+      }
     }
-    const rest = p.slice(last).trim();
-    if (rest) out.push(rest);
+
+    pushBuf();
   }
+
   return out;
 }
 
