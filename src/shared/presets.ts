@@ -105,7 +105,26 @@ export async function loadPreset(name: string): Promise<SplitwriterPrefs | null>
   const dir = await presetRootDir();
   const file = await join(dir, `${name}.swpreset.json`);
   try {
-    return JSON.parse(await readTextFile(file)) as SplitwriterPrefs;
+    const raw = JSON.parse(await readTextFile(file)) as any;
+
+    // metadata(version/name/createdAt)는 버리고, 실제 prefs 서브셋만 뽑는다
+    const picked: SplitwriterPrefs = {
+      workingFolder: typeof raw.workingFolder === "string" ? raw.workingFolder : "",
+      autosave: typeof raw.autosave === "boolean" ? raw.autosave : DEFAULT_PREFS.autosave,
+      autosaveIntervalSec:
+        typeof raw.autosaveIntervalSec === "number" ? raw.autosaveIntervalSec : DEFAULT_PREFS.autosaveIntervalSec,
+      typeface: raw.typeface ?? DEFAULT_PREFS.typeface,
+      accentColor: typeof raw.accentColor === "string" ? raw.accentColor : DEFAULT_PREFS.accentColor,
+      writingGoal: raw.writingGoal ?? DEFAULT_PREFS.writingGoal,
+      bracket: raw.bracket ?? DEFAULT_PREFS.bracket,
+      theme: raw.theme === "light" ? "light" : "dark",
+      // inputLocale는 SplitwriterPrefs에 넣으면 여기까지 포함
+      ...(typeof raw.inputLocale === "string"
+        ? ({ inputLocale: raw.inputLocale } as any)
+        : ({} as any)),
+    };
+
+    return picked;
   } catch {
     return null;
   }
@@ -121,6 +140,7 @@ export async function applyDefault(): Promise<SplitwriterPrefs> {
     accentColor: DEFAULT_PREFS.accentColor,
     writingGoal: DEFAULT_PREFS.writingGoal,
     bracket: DEFAULT_PREFS.bracket,
-    theme: DEFAULT_PREFS.theme, // 기본은 dark
-  };
+    theme: DEFAULT_PREFS.theme,
+    inputLocale: (DEFAULT_PREFS as any).inputLocale ?? "auto",
+  } as any;
 }

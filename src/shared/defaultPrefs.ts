@@ -10,6 +10,7 @@ export type Preferences = {
   autosave: boolean;
   autosaveIntervalSec: number;
   language: "ko" | "en";
+  inputLocale: string; // "auto" | "en" | "ko" | "zh-hans" | ...
   theme: "dark" | "light";
   typeface: {
     headline: FontTriplet;
@@ -53,6 +54,7 @@ export const DEFAULT_PREFS: Preferences = {
   autosave: true,
   autosaveIntervalSec: 60,
   language: "en",
+  inputLocale: "auto",
   theme: "dark",
   typeface: {
     headline: { name: SYSTEM_STACK, style: "Regular", size: 22 },

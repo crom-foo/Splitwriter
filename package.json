@@ -1,7 +1,7 @@
 {
   "name": "splitwriter",
   "private": true,
-  "version": "0.9.3-beta.4",
+  "version": "0.9.9-beta.5",
   "type": "module",
   "scripts": {
     "dev": "vite --port 5173 --strictPort",
