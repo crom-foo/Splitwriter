@@ -14,8 +14,10 @@ _For all creators — past, present, and future._
 Splitwriter is a focused writing tool built to make creative work easier.  
 Instead of fighting with a heavy word processor, you just open Splitwriter and start writing.
 
-Current beta: **0.9.3-beta.4 (Portable, Windows x64)**  
-Available languages: **한국어 (Korean), English**  
+Current beta: **v0.9.9-beta.5** — **Portable (Windows x64)**
+
+UI language: **한국어, English**
+Input locale (typing): **Auto (System)** + manual options (e.g. **English, 한국어, 日本語, 中文, Русский, ...**)
 
 Free Forever — Splitwriter aims to stay free for both personal and commercial creative work.
 
