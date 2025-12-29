@@ -16,7 +16,7 @@ Instead of fighting with a heavy word processor, you just open Splitwriter and s
 
 Current beta: **v0.9.9-beta.5** — **Portable (Windows x64)**
 
-UI language: **English**
+UI language: **English**  
 Typing input (IME/keyboard): **Auto (System)** + manual options (e.g. English, 한국어, 日本語, 中文, Русский, …)
 
 Free Forever — Splitwriter aims to stay free for both personal and commercial creative work.
