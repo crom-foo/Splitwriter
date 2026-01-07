@@ -2724,7 +2724,7 @@ dependencies = [
 
 [[package]]
 name = "splitwriter"
-version = "0.9.9-beta.5"
+version = "1.0.0-plain"
 dependencies = [
  "fontdb",
  "serde",

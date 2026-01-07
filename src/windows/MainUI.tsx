@@ -100,7 +100,7 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
 
 // --- AppVersion (UI 표기: Tauri면 실제 버전, 웹이면 fallback) ---
 const AppVersion: React.FC<{ fallback?: string }> = ({
-  fallback = "v0.9.9-beta.5",
+  fallback = "v1.0.0-plain",
 }) => {
   const [v, setV] = React.useState<string>(fallback);
 
@@ -123,8 +123,6 @@ const AppVersion: React.FC<{ fallback?: string }> = ({
 
 function applyPrefsAndPersist(next: PrefsType, notify: (msg: string)=>void) {
   const toStore: any = { ...next };
-  delete toStore.accentColor; // Do not persist runtime-only accentColor (computed at runtime)
-
   const wf = String((next as any).workingFolder || "");
   try {
     localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(toStore));
@@ -162,7 +160,7 @@ function loadPrefsFromStorage(defaults: PrefsType): PrefsType {
           accent:   parsedV4.typeface?.accent   ?? defaults.typeface.accent,
           etc:      parsedV4.typeface?.etc      ?? defaults.typeface.etc,
         },
-        accentColor: defaults.accentColor,
+        accentColor: parsedV4.accentColor ?? defaults.accentColor,
         writingGoal: parsedV4.writingGoal ?? defaults.writingGoal,
         bracket:     parsedV4.bracket     ?? defaults.bracket,
         language:    parsedV4.language    ?? defaults.language,
@@ -1097,7 +1095,6 @@ const applySnap = (s: HistorySnap) => {
 
         try {
           const dehydrated = { ...merged } as any;
-          delete dehydrated.accentColor;
           localStorage.setItem(PREFS_STORAGE_KEY, JSON.stringify(dehydrated));
           if (merged.workingFolder) localStorage.setItem(PREFS_WF_KEY, merged.workingFolder);
         } catch {}
@@ -2789,7 +2786,7 @@ function Modal({
 }) {
   return (
     <div
-      style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 50 }}
+      style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 5000 }}
       onMouseDown={onClose}
     >
       <div
@@ -2893,6 +2890,8 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
     </div>
   );
 
+  const REPO_URL = "https://github.com/crom-foo/Splitwriter";
+
   // theme 에 따라 다크/라이트 배너 선택 (파일만 준비되어 있으면 바로 교체됨)
   const aboutLogo =
     theme === "light"
@@ -2900,11 +2899,14 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
       : new URL("./logo/Logo_Banner_Dark.png", import.meta.url).href;
 
   return (
-    <div style={{ padding: 16 }}>
+    <div
+      className="sw-about"
+      style={{ padding: 16 }}
+    >
       {/* Header */}
       <div style={{ marginBottom: 12 }}>
         {/* 로고 배너 */}
-        <div style={{ display: "flex", justifyContent: "center", marginBottom: 8 }}>
+        <div style={{ display: "flex", justifyContent: "center", marginBottom: 14 }}>
           <img
             src={aboutLogo}
             alt="Splitwriter — For all creators — past, present, and future."
@@ -2918,18 +2920,48 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         </div>
 
         {/* 버전 + 크레딧 */}
+        {/* Version / Repo / Credit — one row */}
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
+            display: "grid",
+            gridTemplateColumns: "auto minmax(0, 1fr) auto",
             alignItems: "baseline",
-            marginTop: 4,
+            columnGap: 12,
+            fontSize: 9,
+            lineHeight: "12px",
+            marginTop: 0,
           }}
         >
-          <div style={{ fontSize: 9, opacity: 0.8 }}>
-            <AppVersion fallback="v0.9.9-beta.5" />
-          </div>
-          <div style={{ fontSize: 9, opacity: 0.7 }}>Created by Crom &amp; GPT</div>
+          {/* left: version */}
+          <span style={{ opacity: 0.8, whiteSpace: "nowrap" }}>
+            <AppVersion fallback="v1.0.0-plain" />
+          </span>
+
+          {/* center: repo link (accent only) */}
+          <a
+            href={REPO_URL}
+            target="_blank"
+            rel="noreferrer"
+            style={{
+              justifySelf: "stretch",
+              textAlign: "center",
+              color: "var(--text-muted)",
+              textDecoration: "none",
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              display: "block",
+              opacity: 0.95,
+            }}
+            title={REPO_URL}
+          >
+            {REPO_URL}
+          </a>
+
+          {/* right: credit */}
+          <span style={{ opacity: 0.7, whiteSpace: "nowrap", textAlign: "right" }}>
+            Created by Crom &amp; GPT
+          </span>
         </div>
       </div>
 

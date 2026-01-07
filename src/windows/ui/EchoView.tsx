@@ -59,6 +59,19 @@ type EchoReaderProps = {
 const END_PUNCT = /[\.!?…]+/;
 const CLOSERS = `”’"'\\)\\]\\}〉》」『】>`;
 
+// 분리 모드: SMART(기존) / ENTER(줄바꿈만)
+type SplitMode = "SMART" | "ENTER";
+
+/** Split text by ENTER only (line breaks). */
+function tokenizeByEnter(src?: string): string[] {
+  if (!src) return [];
+  const text = src.replace(/\r\n/g, "\n").replace(/\t/g, " ");
+  return text
+    .split(/\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
 /** Split text into displayable chunks (rough sentence/phrase units). */
 function tokenizeEchoText(src?: string): string[] {
   if (!src) return [];
@@ -234,6 +247,9 @@ const EchoReader: React.FC<EchoReaderProps> = ({
   // start from caret index
   startAt = 0,
 }) => {
+  // Split mode: 기본 SMART(현재 분리기)
+  const [splitMode, setSplitMode] = useState<SplitMode>("SMART");
+
   // Portal host: create once on mount; remove on unmount.
   const hostRef = useRef<HTMLDivElement | null>(null);
   useEffect(() => {
@@ -247,18 +263,21 @@ const EchoReader: React.FC<EchoReaderProps> = ({
     };
   }, []);
 
-  // Tokenize and slice from the requested start chunk.
-  const chunks = useMemo(() => tokenizeEchoText(text), [text]);
+  // Tokenize based on mode and slice from the requested start chunk.
+  const chunks = useMemo(() => {
+    return splitMode === "ENTER" ? tokenizeByEnter(text) : tokenizeEchoText(text);
+  }, [text, splitMode]);
+
   const start = Math.max(0, Math.min(startAt ?? 0, chunks.length));
   const view = useMemo(() => chunks.slice(start), [chunks, start]);
   const hasView = view.length > 0;
 
   // Current chunk index (relative to `view`).
   const [idx, setIdx] = useState(0);
-  // Reset index when re-opened or the start changes.
+  // Reset index when re-opened or the start/mode changes.
   useEffect(() => {
     if (open) setIdx(0);
-  }, [open, start]);
+  }, [open, start, splitMode]);
 
   // Background image cycling index.
   const [bgIndex, setBgIndex] = useState(0);
@@ -319,6 +338,13 @@ const EchoReader: React.FC<EchoReaderProps> = ({
 
       if (key === "Escape") {
         onClose();
+        return;
+      }
+
+      // Split mode toggle (SMART <-> ENTER)
+      if (key === "Tab") {
+        e.preventDefault();
+        setSplitMode((m) => (m === "SMART" ? "ENTER" : "SMART"));
         return;
       }
 
@@ -475,13 +501,21 @@ const EchoReader: React.FC<EchoReaderProps> = ({
           zIndex: 1,
         }}
       >
-        <span>{title}</span>
+        <span>
+          {title}
+          {splitMode ? (
+            <span style={{ marginLeft: 10, opacity: 0.9 }}>
+              [{splitMode === "SMART" ? "SMART" : "ENTER"}]
+            </span>
+          ) : null}
+        </span>
         <span>
           {idx >= view.length - 1 ? (
             "End of text — press Esc to exit"
           ) : (
             <>
-              ← / → · Space · Esc
+              ← / → · Space · Enter · Esc
+              {"  ·  Tab : Split (SMART/ENTER)"}
               {bgSources && bgSources.length > 1 ? "  ·  [ / ] : Background" : ""}
               {"  ·  + / - : Size"}
             </>

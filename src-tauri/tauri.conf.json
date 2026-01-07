@@ -1,5 +1,5 @@
 {
-  "package": { "productName": "Splitwriter", "version": "0.9.9-beta.5" },
+  "package": { "productName": "Splitwriter", "version": "1.0.0-plain" },
   "build": {
     "beforeDevCommand": "vite --port 5173 --strictPort",
     "beforeBuildCommand": "vite build",
