@@ -157,7 +157,7 @@ This is expected behavior for unsigned beta builds.
 Splitwriter is released under the **MIT License**.
 
 Free forever for personal and commercial creative work.  
-Made by Crom Kim & GPT, 2025.
+Made by Crom Kim & GPT, 2025-2026.
 
 ---
 
