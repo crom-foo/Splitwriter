@@ -158,3 +158,11 @@ Splitwriter is released under the **MIT License**.
 
 Free forever for personal and commercial creative work.  
 Made by Crom Kim & GPT, 2025.
+
+---
+
+## Support
+
+Splitwriter is free forever.  
+If it helped you, you can buy me a coffee ☕  
+https://paypal.me/splitwriter
