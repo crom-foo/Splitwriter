@@ -163,6 +163,7 @@ Made by Crom Kim & GPT, 2025-2026.
 
 ## Support
 
-Splitwriter is free forever.  
-If it helped you, you can buy me a coffee ☕  
-https://paypal.me/splitwriter
+Support is optional — thank you for using Splitwriter.
+
+Splitwriter is free forever. If it helped you, you can buy me a coffee ☕  
+PayPal: [paypal.me/splitwriter](https://paypal.me/splitwriter)
