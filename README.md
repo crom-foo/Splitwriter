@@ -2,7 +2,7 @@
   <img
     width="300"
     height="400"
-    alt="Logo_Light_Splitwriter"
+    alt="Splitwriter_Logo_White"
     src="https://github.com/user-attachments/assets/14371b15-b59f-4eb3-91de-7d391a5de180"
   />
 </p>
