@@ -58,34 +58,6 @@ type Props = React.HTMLAttributes<HTMLDivElement> & {
 };
 
 const EDGE_MARGIN = 14;
-const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif|bmp)$/i;
-
-type FolderNavState = { files: string[]; index: number };
-
-function isImageFilePath(p?: string | null) {
-  return !!p && IMAGE_EXT_RE.test(p.split(/[?#]/)[0] || "");
-}
-
-function isLocalFsPath(p?: string | null) {
-  if (!p) return false;
-  return /^[A-Za-z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\\\");
-}
-
-function sameFsPath(a?: string | null, b?: string | null) {
-  const norm = (x?: string | null) =>
-    normalizePath(x || "")
-      .replace(/\\/g, "/")
-      .replace(/\/+$/, "")
-      .toLowerCase();
-  const aa = norm(a);
-  const bb = norm(b);
-  return !!aa && !!bb && aa === bb;
-}
-
-function pathForFolderNav(raw?: string | null) {
-  const p = normalizePath(raw || "");
-  return isLocalFsPath(p) ? p : "";
-}
 
 const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
   {
@@ -124,9 +96,6 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
   const isRuntimeUrl = (s?: string | null) =>
     !!s && /^(blob:|data:|https?:|asset:|tauri:|file:)/i.test(s || "");
 
-  const [folderNav, setFolderNav] = useState<FolderNavState>({ files: [], index: -1 });
-  const canFolderNav = folderNav.files.length > 1;
-
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -139,40 +108,6 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
     })();
     return () => { alive = false; };
   }, [src]);
-
-  useEffect(() => {
-    let alive = true;
-
-    (async () => {
-      const currentPath = pathForFolderNav(displayPath ?? src ?? resolved.missing ?? null);
-      if (!isTauri() || !currentPath) {
-        if (alive) setFolderNav({ files: [], index: -1 });
-        return;
-      }
-
-      try {
-        const [{ readDir }, { dirname }] = await Promise.all([
-          import("@tauri-apps/api/fs"),
-          import("@tauri-apps/api/path"),
-        ]);
-
-        const dir = await dirname(currentPath);
-        const entries = await readDir(dir, { recursive: false });
-        const files = entries
-          .map((e: any) => e?.path as string | undefined)
-          .filter((p): p is string => !!p && isImageFilePath(p))
-          .sort((a, b) => baseName(a).localeCompare(baseName(b), undefined, { numeric: true, sensitivity: "base" }));
-
-        const index = files.findIndex((p) => sameFsPath(p, currentPath));
-        if (alive) setFolderNav({ files, index });
-      } catch (err) {
-        if (IS_DEV) console.warn("[ImageBoard] folder navigation scan failed", err);
-        if (alive) setFolderNav({ files: [], index: -1 });
-      }
-    })();
-
-    return () => { alive = false; };
-  }, [displayPath, src, resolved.missing]);
 
   useEffect(() => {
     if (initialView && typeof initialView.scale === "number") {
@@ -326,23 +261,6 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
   const pathStr  = normalizePath(rawPath);
   const safeName = pathStr ? baseName(pathStr) : "";
 
-  function navigateFolderImage(step: -1 | 1) {
-    if (!canFolderNav) return;
-
-    const len = folderNav.files.length;
-    const baseIndex = folderNav.index >= 0 ? folderNav.index : (step > 0 ? -1 : 0);
-    const nextIndex = (baseIndex + step + len) % len;
-    const nextPath = folderNav.files[nextIndex];
-    if (!nextPath || sameFsPath(nextPath, pathStr)) return;
-
-    const imageId = wrapRef.current?.getAttribute("data-image-id") || undefined;
-    window.dispatchEvent(
-      new CustomEvent("sw:image:use", {
-        detail: { path: nextPath, imageId },
-      })
-    );
-  }
-
   return (
     <div
       ref={wrapRef}
@@ -396,51 +314,6 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
       onLostPointerCapture={onPointerCaptureLost}
       onDoubleClick={onDoubleClick}
     >
-      {canFolderNav && !!src && (
-        <div
-          title={`${baseName(folderNav.files[Math.max(0, folderNav.index)] || pathStr)} (${Math.max(0, folderNav.index) + 1}/${folderNav.files.length})`}
-          style={{
-            position: "absolute",
-            top: 6,
-            right: 8,
-            height: 24,
-            display: "inline-flex",
-            alignItems: "center",
-            gap: 2,
-            padding: "0 4px",
-            borderRadius: 6,
-            background: "rgba(10,12,16,0.34)",
-            border: "1px solid rgba(255,255,255,0.16)",
-            backdropFilter: "blur(4px)",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
-            opacity: 0.42,
-            transition: "opacity .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease",
-            zIndex: 8,
-            pointerEvents: "auto",
-          }}
-          onMouseEnter={(e) => {
-            const el = e.currentTarget;
-            el.style.opacity = "0.90";
-            el.style.background = "rgba(10,12,16,0.58)";
-            el.style.borderColor = "rgba(255,255,255,0.28)";
-            el.style.boxShadow = "0 6px 18px rgba(0,0,0,0.26)";
-          }}
-          onMouseLeave={(e) => {
-            const el = e.currentTarget;
-            el.style.opacity = "0.42";
-            el.style.background = "rgba(10,12,16,0.34)";
-            el.style.borderColor = "rgba(255,255,255,0.16)";
-            el.style.boxShadow = "0 4px 12px rgba(0,0,0,0.18)";
-          }}
-          onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-          onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}
-        >
-          <NavBtn label="Previous image" onClick={() => navigateFolderImage(-1)}>◀</NavBtn>
-          <NavBtn label="Next image" onClick={() => navigateFolderImage(1)}>▶</NavBtn>
-        </div>
-      )}
-
       {!src ? (
         <div
           style={{
@@ -527,48 +400,6 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
 });
 
 export default ImageBoard;
-
-function NavBtn({
-  children,
-  label,
-  onClick,
-}: {
-  children: React.ReactNode;
-  label: string;
-  onClick: () => void;
-}) {
-  const [hover, setHover] = useState(false);
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      title={label}
-      onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick(); }}
-      onMouseEnter={() => setHover(true)}
-      onMouseLeave={() => setHover(false)}
-      style={{
-        width: 20,
-        height: 20,
-        border: "none",
-        borderRadius: 4,
-        padding: 0,
-        display: "grid",
-        placeItems: "center",
-        background: hover ? "rgba(255,255,255,0.14)" : "transparent",
-        color: hover ? "rgba(255,255,255,0.96)" : "rgba(231,234,238,0.78)",
-        fontSize: 10,
-        lineHeight: 1,
-        cursor: "pointer",
-        userSelect: "none",
-        transition: "background .12s ease, color .12s ease",
-      }}
-    >
-      {children}
-    </button>
-  );
-}
 
 function clamp(v: number, a: number, b: number) {
   return Math.max(a, Math.min(b, v));

@@ -79,10 +79,10 @@ export type SwonIO = {
   clearDirty(): void;
   isDirty(): boolean;
   canQuickSave(): boolean;
-  save(): Promise<void | string | null>;
-  saveAs(): Promise<void | string | null>;
-  open(): Promise<void | string | null>;
-  openAt(absPath: string): Promise<void | string | null>; // helper for e.g. sidebar double-click
+  save(): Promise<void>;
+  saveAs(): Promise<void>;
+  open(): Promise<void>;
+  openAt(absPath: string): Promise<void>; // helper for e.g. sidebar double-click
   newFile(): void;
   getTitle(): string;
   notify: NotifyFn;
@@ -194,17 +194,6 @@ export function setupSwonIO(opts: Opts): SwonIO {
   /** Heuristic: looks like an absolute filesystem path. */
   const isPathLike = (s?: string | null) =>
     !!s && (/^[A-Za-z]:[\\/]/.test(s) || s.startsWith("/") || s.startsWith("\\\\"));
-
-  const ensureSwonExt = (p: string) => (/\.swon$/i.test(p) ? p : `${p}.swon`);
-
-  const setFileNameFromPath = (p: string | null) => {
-    if (!p) return;
-    try {
-      fileName = p.split(/[\\/]/).pop()?.replace(/\.swon$/i, "") || fileName || "untitled";
-    } catch {
-      fileName = fileName || "untitled";
-    }
-  };
 
   /** App-scoped ephemeral URL schemes. */
   const isEphemeralUrl = (s?: string | null) => !!s && /^(asset:|tauri:|app:)/i.test(s);
@@ -324,16 +313,18 @@ export function setupSwonIO(opts: Opts): SwonIO {
         defaultPath: `${fileName || "untitled"}.swon`,
         filters: [{ name: "Splitwriter Project", extensions: ["swon"] }],
       });
-      if (typeof picked !== "string") return null; // canceled
-      const target = ensureSwonExt(String(picked));
-      await writeTextFile(target, text);
-      diskPath = target; // allow Ctrl+S afterwards
+      if (typeof picked !== "string") return; // canceled
+      await writeTextFile(picked, text);
+      diskPath = picked; // allow Ctrl+S afterwards
       fileHandle = null;
-      setFileNameFromPath(target);
       clearDirty();
+      try {
+        fileName =
+          picked.split(/[\\/]/).pop()?.replace(/\.swon$/i, "") || fileName;
+      } catch {}
       syncCurrentFileGlobals();
       opts.notify(`Saved: ${fileName}.swon`, "info", 1400);
-      return diskPath;
+      return;
     }
 
     // Web: File System Access API
@@ -358,7 +349,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
         "untitled";
       clearDirty();
       opts.notify(`Saved: ${fileName}.swon`, "info", 1400);
-      return null;
+      return;
     }
 
     // Web: download fallback
@@ -393,12 +384,10 @@ export function setupSwonIO(opts: Opts): SwonIO {
           defaultPath: `${fileName || "untitled"}.swon`,
           filters: [{ name: "Splitwriter Project", extensions: ["swon"] }],
         });
-        if (typeof picked !== "string") return null; // canceled
-        diskPath = ensureSwonExt(String(picked));
-        setFileNameFromPath(diskPath);
+        if (typeof picked !== "string") return; // canceled
+        diskPath = picked;
       }
       await writeTextFile(diskPath, text);
-      if (!fileName || fileName === "untitled") setFileNameFromPath(diskPath);
       clearDirty();
       syncCurrentFileGlobals();
       opts.notify(
@@ -406,7 +395,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
         "info",
         1400
       );
-      return diskPath;
+      return;
     }
 
     // Web: direct write via File System Access API
@@ -469,7 +458,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       } catch {}
       syncCurrentFileGlobals();
       opts.notify(`${fileName}.swon loaded`, "info", 1600);
-      return diskPath;
+      return;
     }
 
     // Web: File System Access API
@@ -550,7 +539,6 @@ export function setupSwonIO(opts: Opts): SwonIO {
 
     syncCurrentFileGlobals();
     opts.notify(`${fileName}.swon loaded`, "info", 1600);
-    return diskPath;
   }
 
   // ----------------------------- new

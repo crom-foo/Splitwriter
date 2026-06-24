@@ -409,28 +409,25 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
             gap: 2,
             padding: "0 4px",
             borderRadius: 6,
-            background: "rgba(10,12,16,0.34)",
-            border: "1px solid rgba(255,255,255,0.16)",
-            backdropFilter: "blur(4px)",
-            boxShadow: "0 4px 12px rgba(0,0,0,0.18)",
-            opacity: 0.42,
-            transition: "opacity .12s ease, background .12s ease, border-color .12s ease, box-shadow .12s ease",
+            background: "rgba(0,0,0,0.24)",
+            border: "1px solid rgba(255,255,255,0.10)",
+            backdropFilter: "blur(3px)",
+            opacity: 0.36,
+            transition: "opacity .12s ease, background .12s ease, border-color .12s ease",
             zIndex: 8,
             pointerEvents: "auto",
           }}
           onMouseEnter={(e) => {
             const el = e.currentTarget;
-            el.style.opacity = "0.90";
-            el.style.background = "rgba(10,12,16,0.58)";
-            el.style.borderColor = "rgba(255,255,255,0.28)";
-            el.style.boxShadow = "0 6px 18px rgba(0,0,0,0.26)";
+            el.style.opacity = "0.88";
+            el.style.background = "rgba(0,0,0,0.34)";
+            el.style.borderColor = "rgba(255,255,255,0.18)";
           }}
           onMouseLeave={(e) => {
             const el = e.currentTarget;
-            el.style.opacity = "0.42";
-            el.style.background = "rgba(10,12,16,0.34)";
-            el.style.borderColor = "rgba(255,255,255,0.16)";
-            el.style.boxShadow = "0 4px 12px rgba(0,0,0,0.18)";
+            el.style.opacity = "0.36";
+            el.style.background = "rgba(0,0,0,0.24)";
+            el.style.borderColor = "rgba(255,255,255,0.10)";
           }}
           onPointerDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
           onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
@@ -556,13 +553,12 @@ function NavBtn({
         padding: 0,
         display: "grid",
         placeItems: "center",
-        background: hover ? "rgba(255,255,255,0.14)" : "transparent",
-        color: hover ? "rgba(255,255,255,0.96)" : "rgba(231,234,238,0.78)",
+        background: hover ? "rgba(255,255,255,0.12)" : "transparent",
+        color: "rgba(231,234,238,0.86)",
         fontSize: 10,
         lineHeight: 1,
         cursor: "pointer",
         userSelect: "none",
-        transition: "background .12s ease, color .12s ease",
       }}
     >
       {children}

@@ -1,6 +1,6 @@
 [package]
 name = "splitwriter"
-version = "1.0.0-plain"
+version = "1.1.0-portable"
 description = "Minimal multi-window sample (Main_UI / Open_Image)"
 authors = ["you"]
 license = "MIT"
@@ -11,7 +11,7 @@ rust-version = "1.64"
 tauri-build = { version = "1", features = [] }
 
 [dependencies]
-tauri = { version = "1", features = [ "dialog-confirm", "shell-open", "path-all", "dialog-message", "window-all", "fs-all", "dialog-save", "dialog-open"] }
+tauri = { version = "1", features = [ "shell-execute", "dialog-confirm", "shell-open", "path-all", "dialog-message", "window-all", "fs-all", "dialog-save", "dialog-open"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 trash = "3"

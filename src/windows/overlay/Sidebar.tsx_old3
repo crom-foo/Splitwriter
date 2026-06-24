@@ -474,71 +474,42 @@ export default function Sidebar({
     const target = (effectiveRoot || workingFolder || "").trim();
     if (!target || !isTauri()) return;
 
-    const notifyFail = async (extra?: string) => {
+    try {
+      try {
+        const ok = await fs.exists(target);
+        if (!ok) throw new Error(`Folder does not exist: ${target}`);
+      } catch (existsErr) {
+        // exists() can fail on unusual Windows paths; still try shell.open below.
+        console.warn("[Sidebar] working folder exists check failed:", existsErr);
+      }
+
+      const { open } = await import("@tauri-apps/api/shell");
+      const slashPath = target.replace(/\\/g, "/");
+      const fileUrl = toFileUrl(target);
+      const candidates = Array.from(new Set([target, slashPath, fileUrl].filter(Boolean)));
+
+      let lastErr: any = null;
+      for (const candidate of candidates) {
+        try {
+          await open(candidate);
+          return;
+        } catch (err) {
+          lastErr = err;
+          console.warn("[Sidebar] shell.open failed:", candidate, err);
+        }
+      }
+      throw lastErr || new Error("shell.open failed");
+    } catch (err) {
+      console.error("Open working folder failed:", err);
       try {
         const { message } = await import("@tauri-apps/api/dialog");
         await message(
-          `Failed to open folder:
-${target}${extra ? `
-
-${extra}` : ""}`,
+          `Failed to open folder:\n${target}\n\nIf this keeps happening, check Tauri shell.open allowlist.`,
           { title: "Splitwriter", type: "warning" }
         );
       } catch {
-        alert(`Failed to open folder:
-${target}`);
+        alert(`Failed to open folder:\n${target}`);
       }
-    };
-
-    // Keep a quick existence check, but do not let it block explorer fallback.
-    try {
-      const ok = await fs.exists(target);
-      if (!ok) {
-        await notifyFail("The folder does not seem to exist.");
-        return;
-      }
-    } catch (existsErr) {
-      console.warn("[Sidebar] working folder exists check failed:", existsErr);
-    }
-
-    try {
-      const { open, Command } = await import("@tauri-apps/api/shell");
-      const slashPath = target.replace(/\\/g, "/");
-      const fileUrl = toFileUrl(target);
-
-      // 1) Tauri shell.open normal route.
-      // 2) Explicit Explorer route for Windows folders.
-      const openAttempts: Array<() => Promise<any>> = [
-        () => open(target),
-        () => open(slashPath),
-        () => open(fileUrl),
-        () => open(target, "explorer"),
-        () => open(target, "explorer.exe"),
-      ];
-
-      for (const attempt of openAttempts) {
-        try {
-          await attempt();
-          return;
-        } catch (err) {
-          console.warn("[Sidebar] shell.open attempt failed:", err);
-        }
-      }
-
-      // Last resort: direct explorer.exe command.
-      // Requires tauri.conf.json allowlist.shell.execute + scope name "explorer".
-      try {
-        await new Command("explorer", [target]).execute();
-        return;
-      } catch (cmdErr) {
-        console.warn("[Sidebar] explorer command failed:", cmdErr);
-        throw cmdErr;
-      }
-    } catch (err) {
-      console.error("Open working folder failed:", err);
-      await notifyFail(
-        "Tauri shell.open failed. If this persists, enable shell.execute for explorer.exe in tauri.conf.json."
-      );
     }
   }
 
@@ -767,7 +738,7 @@ ${target}`);
           {/* header */}
           <div className="px-3 pt-3 pb-2 border-b border-[var(--sb-border)]">
             <div className="text-xs uppercase tracking-wide opacity-70">Project</div>
-            <div className="mt-1 grid grid-cols-[minmax(0,1fr)_20px] items-center gap-1.5 min-h-[22px]">
+            <div className="mt-1 flex items-center gap-1.5">
               <div
                 className="min-w-0 flex-1 text-[11px] leading-snug break-all opacity-80"
                 title={effectiveRoot || ""}

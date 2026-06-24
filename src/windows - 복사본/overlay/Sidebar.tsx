@@ -265,6 +265,22 @@ async function safeRename(oldPath: string, newPath: string) {
   await fs.removeDir(oldPath);
 }
 
+/* --- Trash helper: move path to OS recycle bin via Tauri command --- */
+async function trashPath(absPath: string) {
+  if (!isTauri()) return;
+  if (!absPath) return;
+
+  try {
+    const { invoke } = await import("@tauri-apps/api/tauri");
+    // Rust 쪽에 정의할 커맨드 이름
+    await invoke("sw_trash_path", { path: absPath });
+  } catch (err) {
+    console.error("trashPath failed", err);
+    // 휴지통 이동이 실패하면 **아무 것도 지우지 않고** 에러만 올림
+    throw err;
+  }
+}
+
 /* -------------------------------- Component ------------------------------ */
 export default function Sidebar({
   open, onClose, workingFolder, onOpenFile, onPreview,
@@ -428,119 +444,14 @@ export default function Sidebar({
   const handleSaveAs = () => { onSaveAs ? onSaveAs() : appSaveAs(); };
   const handleQuit   = () => { onQuit   ? (onQuit() as any) : appQuit(); };
 
-  const headerBtnClass =
+  const sidebarHeaderBtnClass =
     "h-7 px-2.5 rounded-md border border-[var(--sb-border)] " +
     "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] " +
     "text-[11px] font-semibold tracking-[0.01em] leading-none " +
-    "transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)]";
-
-  const folderOpenBtnClass =
-    "shrink-0 self-center w-5 h-5 rounded-md border border-[var(--sb-border)] " +
-    "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] " +
-    "grid place-items-center opacity-70 hover:opacity-100 transition-colors transition-opacity " +
-    "focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)] disabled:opacity-30 disabled:cursor-default";
-
-  function toFileUrl(absPath: string) {
-    const raw = (absPath || "").trim();
-    if (!raw) return "";
-    if (/^file:\/\//i.test(raw)) return raw;
-
-    const slash = raw.replace(/\\/g, "/");
-
-    // Windows drive path: C:/Users/foo -> file:///C:/Users/foo
-    if (/^[A-Za-z]:\//.test(slash)) {
-      const parts = slash.split("/").map((seg, i) =>
-        i === 0 && /^[A-Za-z]:$/.test(seg) ? seg : encodeURIComponent(seg)
-      );
-      return `file:///${parts.join("/")}`;
-    }
-
-    // UNC path: //server/share/folder -> file://server/share/folder
-    if (slash.startsWith("//")) {
-      const parts = slash.slice(2).split("/").map(encodeURIComponent);
-      return `file://${parts.join("/")}`;
-    }
-
-    // Unix-like absolute path
-    if (slash.startsWith("/")) {
-      const parts = slash.slice(1).split("/").map(encodeURIComponent);
-      return `file:///${parts.join("/")}`;
-    }
-
-    return slash;
-  }
-
-  async function openWorkingFolder() {
-    const target = (effectiveRoot || workingFolder || "").trim();
-    if (!target || !isTauri()) return;
-
-    const notifyFail = async (extra?: string) => {
-      try {
-        const { message } = await import("@tauri-apps/api/dialog");
-        await message(
-          `Failed to open folder:
-${target}${extra ? `
-
-${extra}` : ""}`,
-          { title: "Splitwriter", type: "warning" }
-        );
-      } catch {
-        alert(`Failed to open folder:
-${target}`);
-      }
-    };
-
-    // Keep a quick existence check, but do not let it block explorer fallback.
-    try {
-      const ok = await fs.exists(target);
-      if (!ok) {
-        await notifyFail("The folder does not seem to exist.");
-        return;
-      }
-    } catch (existsErr) {
-      console.warn("[Sidebar] working folder exists check failed:", existsErr);
-    }
-
-    try {
-      const { open, Command } = await import("@tauri-apps/api/shell");
-      const slashPath = target.replace(/\\/g, "/");
-      const fileUrl = toFileUrl(target);
-
-      // 1) Tauri shell.open normal route.
-      // 2) Explicit Explorer route for Windows folders.
-      const openAttempts: Array<() => Promise<any>> = [
-        () => open(target),
-        () => open(slashPath),
-        () => open(fileUrl),
-        () => open(target, "explorer"),
-        () => open(target, "explorer.exe"),
-      ];
-
-      for (const attempt of openAttempts) {
-        try {
-          await attempt();
-          return;
-        } catch (err) {
-          console.warn("[Sidebar] shell.open attempt failed:", err);
-        }
-      }
-
-      // Last resort: direct explorer.exe command.
-      // Requires tauri.conf.json allowlist.shell.execute + scope name "explorer".
-      try {
-        await new Command("explorer", [target]).execute();
-        return;
-      } catch (cmdErr) {
-        console.warn("[Sidebar] explorer command failed:", cmdErr);
-        throw cmdErr;
-      }
-    } catch (err) {
-      console.error("Open working folder failed:", err);
-      await notifyFail(
-        "Tauri shell.open failed. If this persists, enable shell.execute for explorer.exe in tauri.conf.json."
-      );
-    }
-  }
+    "text-[var(--sb-text)] opacity-95 hover:opacity-100 " +
+    "shadow-[inset_0_1px_0_rgba(255,255,255,0.06)] " +
+    "transition-[background,border-color,opacity] duration-150 " +
+    "focus:outline-none focus:border-[var(--sb-border-strong)]";
 
   /* ----------------------- Keyboard: F2 handler (modal) ---------------------- */
   useEffect(() => {
@@ -621,7 +532,7 @@ ${target}`);
 
   async function newFile(basePath: string) {
     if (!isTauri()) return;
-    let name = await openMiniPrompt("New SWON File", "Untitled.swon");
+    let name = await openMiniPrompt("New File (.swon)", "Untitled.swon");
     if (!name) return;
     name = name.trim();
     if (!name.toLowerCase().endsWith(".swon")) name += ".swon";
@@ -653,21 +564,79 @@ ${target}`);
     }
   }
 
+  // 파일 삭제: 더티 상태와 무관, 휴지통으로 이동
   async function deleteFile(absPath: string) {
     if (!isTauri()) return;
-    if (hasDirty && !confirm("There are unsaved changes.\nDelete anyway?")) return;
-    if (!confirm(`Delete this file?\n${absPath}`)) return;
-    try { await fs.removeFile(absPath); await refresh(); }
-    catch (err) { alert(`Failed to delete:\n${absPath}`); console.error(err); }
+
+    // 1) 먼저 확인 창을 띄우고
+    let ok = false;
+    try {
+      const { confirm } = await import("@tauri-apps/api/dialog");
+      ok = await confirm(
+        `Delete this file?\n${absPath}\n\n(The file will be moved to the system Recycle Bin.)`,
+        {
+          title: "Splitwriter",
+          type: "warning",
+        }
+      );
+    } catch (err) {
+      console.error("Delete confirm failed:", err);
+      return; // 다이얼로그 실패하면 그냥 삭제 안 함
+    }
+
+    if (!ok) return; // Cancel 누르면 바로 종료
+
+    // 2) 확인한 뒤에만 휴지통으로 이동
+    try {
+      const { invoke } = await import("@tauri-apps/api/tauri");
+      await invoke("sw_trash_path", { path: absPath });
+      await refresh();
+    } catch (err) {
+      alert(`Failed to delete:\n${absPath}`);
+      console.error(err);
+    }
   }
 
+  // 폴더 삭제: 지금은 폴더도 휴지통으로 (원하면 나중에 다시 제한 걸 수 있음)
   async function deleteFolder(absPath: string) {
     if (!isTauri()) return;
-    if (!confirm(`Delete this folder (must be empty)?\n${absPath}`)) return;
+
+    // 1) 먼저 폴더가 비어 있는지 확인
     try {
       const entries = await fs.readDir(absPath, { recursive: false });
-      if (entries.length > 0) { alert("Folder is not empty."); return; }
-      await fs.removeDir(absPath);
+      if (entries.length > 0) {
+        const { message } = await import("@tauri-apps/api/dialog");
+        await message(
+          "This folder is not empty.\nYou can only delete empty folders from the Project sidebar.",
+          { title: "Splitwriter", type: "warning" }
+        );
+        return;
+      }
+    } catch (err) {
+      alert(`Failed to read folder:\n${absPath}`);
+      console.error(err);
+      return;
+    }
+
+    // 2) OS confirm 다이얼로그로 먼저 확인
+    const prompt =
+      `Delete this folder? (must be empty)\n${absPath}\n\n` +
+      "(The folder will be moved to the system Recycle Bin.)";
+
+    let ok = false;
+    try {
+      const { confirm } = await import("@tauri-apps/api/dialog");
+      ok = await confirm(prompt, { title: "Splitwriter", type: "info" });
+    } catch {
+      // 브라우저 프리뷰 모드 등에서의 폴백
+      ok = window.confirm(prompt);
+    }
+    if (!ok) return;
+
+    // 3) 실제 삭제는 Rust 쪽 trash 커맨드로 → 휴지통으로 이동
+    try {
+      const { invoke } = await import("@tauri-apps/api/tauri");
+      await invoke("sw_trash_path", { path: absPath });
       await refresh();
     } catch (err) {
       alert(`Failed to delete folder:\n${absPath}`);
@@ -767,40 +736,35 @@ ${target}`);
           {/* header */}
           <div className="px-3 pt-3 pb-2 border-b border-[var(--sb-border)]">
             <div className="text-xs uppercase tracking-wide opacity-70">Project</div>
-            <div className="mt-1 grid grid-cols-[minmax(0,1fr)_20px] items-center gap-1.5 min-h-[22px]">
-              <div
-                className="min-w-0 flex-1 text-[11px] leading-snug break-all opacity-80"
-                title={effectiveRoot || ""}
-              >
-                {effectiveRoot || "(no folder set)"}
-                {hasDirty ? <span title="Unsaved changes" className="ml-2 inline-block w-2 h-2 rounded-full bg-[var(--sb-dirty-dot)]" /> : null}
-              </div>
+            <div className="mt-1 text-[13px] leading-snug break-all">
+              {effectiveRoot || "(no folder set)"}
+              {hasDirty ? <span title="Unsaved changes" className="ml-2 inline-block w-2 h-2 rounded-full bg-[var(--sb-dirty-dot)]" /> : null}
+            </div>
+            <div className="mt-2 flex items-center gap-2">
               <button
                 type="button"
-                className={folderOpenBtnClass}
-                onClick={(e)=>{ e.stopPropagation(); openWorkingFolder(); }}
-                onMouseDown={(e)=>e.stopPropagation()}
-                title="Open working folder"
-                aria-label="Open working folder"
-                disabled={!effectiveRoot || !isTauri()}
+                className={sidebarHeaderBtnClass}
+                onClick={handleSave}
+                title="Save (Ctrl+S)"
               >
-                <img
-                  src={ICONS.FolderOpen}
-                  alt=""
-                  width={13}
-                  height={13}
-                  draggable={false}
-                  style={{ display: "block", opacity: 0.82, pointerEvents: "none" }}
-                />
+                Save
               </button>
-            </div>
-            <div className="mt-2 flex gap-2">
-              <button className={headerBtnClass}
-                      onClick={handleSave} title="Save (Ctrl+S)">Save</button>
-              <button className={headerBtnClass}
-                      onClick={handleSaveAs} title="Save As (Ctrl+Shift+S)">Save&nbsp;As</button>
-              <button className={`${headerBtnClass} ml-auto`}
-                      onClick={handleQuit} title="Quit (confirm if unsaved)">Quit</button>
+              <button
+                type="button"
+                className={sidebarHeaderBtnClass}
+                onClick={handleSaveAs}
+                title="Save As (Ctrl+Shift+S)"
+              >
+                Save&nbsp;As
+              </button>
+              <button
+                type="button"
+                className={`${sidebarHeaderBtnClass} ml-auto`}
+                onClick={handleQuit}
+                title="Quit (confirm if unsaved)"
+              >
+                Quit
+              </button>
             </div>
           </div>
 
@@ -843,7 +807,7 @@ ${target}`);
       {ctx && (
         <div
           ref={ctxRef} 
-          className="fixed z-[9999] min-w-[178px] bg-[var(--sb-menu-bg)] text-[var(--sb-text)] rounded-[10px] p-1 border border-[var(--sb-border)] shadow-[0_12px_28px_rgba(0,0,0,0.24)] backdrop-blur-md text-[12px] overflow-hidden"
+          className="fixed z-[9999] min-w-[220px] bg-[var(--sb-menu-bg)] text-[var(--sb-text)] rounded-lg p-1 border border-[var(--sb-border)] shadow-lg"
           style={{ left: ctx.x + "px", top: ctx.y + "px" }}
           onMouseDown={stop}
           onPointerDown={stop}
@@ -852,14 +816,11 @@ ${target}`);
           {ctx.target.kind === "folder" ? (
             <>
               {root && ctx.target.path === root.path ? (
-                <>
-                  <CtxBtn onClick={()=>{setCtx(null); newFolder(ctx.target.path);}}>Create Folder</CtxBtn>
-                  <CtxBtn onClick={()=>{setCtx(null); newFile(ctx.target.path);}}>New SWON File</CtxBtn>
-                </>
+                <CtxBtn onClick={()=>{setCtx(null); newFolder(ctx.target.path);}}>Create Folder</CtxBtn>
               ) : (
                 <>
                   <CtxBtn onClick={()=>{setCtx(null); newFolder(ctx.target.path);}}>Create Folder</CtxBtn>
-                  <CtxBtn onClick={()=>{setCtx(null); newFile(ctx.target.path);}}>New SWON File</CtxBtn>
+                  <CtxBtn onClick={()=>{setCtx(null); newFile(ctx.target.path);}}>New File</CtxBtn>
                   <CtxBtn onClick={()=>{setCtx(null); beginRename(ctx.target.path);}}>Rename</CtxBtn>
                   <CtxBtn onClick={()=>{setCtx(null); deleteFolder(ctx.target.path);}}>Delete</CtxBtn>
                 </>
@@ -1104,12 +1065,5 @@ function DetailsModal({ file, meta, onOpen, onClose }:{
 
 /* ------------------------------ Ctx button -------------------------------- */
 function CtxBtn({ children, onClick }: { children: React.ReactNode; onClick:()=>void; }) {
-  return (
-    <button
-      className="w-full h-[30px] text-left px-2.5 rounded-[7px] hover:bg-[var(--sb-hover)] text-[12px] font-medium tracking-[0.005em] transition-colors"
-      onClick={onClick}
-    >
-      {children}
-    </button>
-  );
+  return <button className="w-full text-left px-3 py-1.5 rounded hover:bg-[var(--sb-hover)]" onClick={onClick}>{children}</button>;
 }

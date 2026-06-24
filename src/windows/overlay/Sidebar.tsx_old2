@@ -435,110 +435,26 @@ export default function Sidebar({
     "transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)]";
 
   const folderOpenBtnClass =
-    "shrink-0 self-center w-5 h-5 rounded-md border border-[var(--sb-border)] " +
+    "shrink-0 w-6 h-6 rounded-md border border-[var(--sb-border)] " +
     "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] " +
     "grid place-items-center opacity-70 hover:opacity-100 transition-colors transition-opacity " +
     "focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)] disabled:opacity-30 disabled:cursor-default";
-
-  function toFileUrl(absPath: string) {
-    const raw = (absPath || "").trim();
-    if (!raw) return "";
-    if (/^file:\/\//i.test(raw)) return raw;
-
-    const slash = raw.replace(/\\/g, "/");
-
-    // Windows drive path: C:/Users/foo -> file:///C:/Users/foo
-    if (/^[A-Za-z]:\//.test(slash)) {
-      const parts = slash.split("/").map((seg, i) =>
-        i === 0 && /^[A-Za-z]:$/.test(seg) ? seg : encodeURIComponent(seg)
-      );
-      return `file:///${parts.join("/")}`;
-    }
-
-    // UNC path: //server/share/folder -> file://server/share/folder
-    if (slash.startsWith("//")) {
-      const parts = slash.slice(2).split("/").map(encodeURIComponent);
-      return `file://${parts.join("/")}`;
-    }
-
-    // Unix-like absolute path
-    if (slash.startsWith("/")) {
-      const parts = slash.slice(1).split("/").map(encodeURIComponent);
-      return `file:///${parts.join("/")}`;
-    }
-
-    return slash;
-  }
 
   async function openWorkingFolder() {
     const target = (effectiveRoot || workingFolder || "").trim();
     if (!target || !isTauri()) return;
 
-    const notifyFail = async (extra?: string) => {
-      try {
-        const { message } = await import("@tauri-apps/api/dialog");
-        await message(
-          `Failed to open folder:
-${target}${extra ? `
-
-${extra}` : ""}`,
-          { title: "Splitwriter", type: "warning" }
-        );
-      } catch {
-        alert(`Failed to open folder:
-${target}`);
-      }
-    };
-
-    // Keep a quick existence check, but do not let it block explorer fallback.
     try {
-      const ok = await fs.exists(target);
-      if (!ok) {
-        await notifyFail("The folder does not seem to exist.");
-        return;
-      }
-    } catch (existsErr) {
-      console.warn("[Sidebar] working folder exists check failed:", existsErr);
-    }
-
-    try {
-      const { open, Command } = await import("@tauri-apps/api/shell");
-      const slashPath = target.replace(/\\/g, "/");
-      const fileUrl = toFileUrl(target);
-
-      // 1) Tauri shell.open normal route.
-      // 2) Explicit Explorer route for Windows folders.
-      const openAttempts: Array<() => Promise<any>> = [
-        () => open(target),
-        () => open(slashPath),
-        () => open(fileUrl),
-        () => open(target, "explorer"),
-        () => open(target, "explorer.exe"),
-      ];
-
-      for (const attempt of openAttempts) {
-        try {
-          await attempt();
-          return;
-        } catch (err) {
-          console.warn("[Sidebar] shell.open attempt failed:", err);
-        }
-      }
-
-      // Last resort: direct explorer.exe command.
-      // Requires tauri.conf.json allowlist.shell.execute + scope name "explorer".
-      try {
-        await new Command("explorer", [target]).execute();
-        return;
-      } catch (cmdErr) {
-        console.warn("[Sidebar] explorer command failed:", cmdErr);
-        throw cmdErr;
-      }
+      const { open } = await import("@tauri-apps/api/shell");
+      await open(target);
     } catch (err) {
       console.error("Open working folder failed:", err);
-      await notifyFail(
-        "Tauri shell.open failed. If this persists, enable shell.execute for explorer.exe in tauri.conf.json."
-      );
+      try {
+        const { message } = await import("@tauri-apps/api/dialog");
+        await message(`Failed to open folder:\n${target}`, { title: "Splitwriter", type: "warning" });
+      } catch {
+        alert(`Failed to open folder:\n${target}`);
+      }
     }
   }
 
@@ -767,7 +683,7 @@ ${target}`);
           {/* header */}
           <div className="px-3 pt-3 pb-2 border-b border-[var(--sb-border)]">
             <div className="text-xs uppercase tracking-wide opacity-70">Project</div>
-            <div className="mt-1 grid grid-cols-[minmax(0,1fr)_20px] items-center gap-1.5 min-h-[22px]">
+            <div className="mt-1 flex items-start gap-1.5">
               <div
                 className="min-w-0 flex-1 text-[11px] leading-snug break-all opacity-80"
                 title={effectiveRoot || ""}
@@ -778,7 +694,7 @@ ${target}`);
               <button
                 type="button"
                 className={folderOpenBtnClass}
-                onClick={(e)=>{ e.stopPropagation(); openWorkingFolder(); }}
+                onClick={openWorkingFolder}
                 onMouseDown={(e)=>e.stopPropagation()}
                 title="Open working folder"
                 aria-label="Open working folder"
@@ -787,8 +703,8 @@ ${target}`);
                 <img
                   src={ICONS.FolderOpen}
                   alt=""
-                  width={13}
-                  height={13}
+                  width={14}
+                  height={14}
                   draggable={false}
                   style={{ display: "block", opacity: 0.82, pointerEvents: "none" }}
                 />

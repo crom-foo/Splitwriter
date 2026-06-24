@@ -23,7 +23,6 @@ import { bootstrapPrefsOnAppStart } from "./overlay/Preferences";
 import {
   initAppActions,
   openWithGuard,
-  openByPath,
   save,
   saveAsAndBind,
   // reloadWithGuard,
@@ -101,7 +100,7 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
 
 // --- AppVersion (UI 표기: Tauri면 실제 버전, 웹이면 fallback) ---
 const AppVersion: React.FC<{ fallback?: string }> = ({
-  fallback = "v1.1.0-portable",
+  fallback = "v1.0.0-plain",
 }) => {
   const [v, setV] = React.useState<string>(fallback);
 
@@ -2668,15 +2667,26 @@ const applySnap = (s: HistorySnap) => {
             workingFolder={workingFolder}
             onOpenFile={async (absPath: string) => {
               try {
-                await openByPath(absPath);
+                if (io.isDirty() && !(await ask("Open a project? Unsaved changes will be lost."))) return;
+
+                if ((io as any)?.openAt) {
+                  await (io as any).openAt(absPath);
+                } else {
+                  await io.open(); // 폴백
+                }
+
+                await setCurrentFileAndNotify(absPath);
+                io.notify?.("Project loaded.", "info", 1200);
               } catch (e) {
                 console.error(e);
                 io.notify?.("Failed to open project.", "error", 2000);
               }
             }}
             onSave={async () => { await save(); }}
-            onSaveAs={async () => { await saveAsAndBind(); }}
-            onQuit={async () => { await quitWithGuard(); }}
+            onSaveAs={async () => {
+              const p = await saveAsAndBind();
+              if (p) await setCurrentFileAndNotify(p);
+            }}
           />
         </div>
       )}
@@ -2924,7 +2934,7 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         >
           {/* left: version */}
           <span style={{ opacity: 0.8, whiteSpace: "nowrap" }}>
-            <AppVersion fallback="v1.1.0-portable" />
+            <AppVersion fallback="v1.0.0-plain" />
           </span>
 
           {/* center: repo link (accent only) */}

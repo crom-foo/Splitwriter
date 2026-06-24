@@ -1,5 +1,8 @@
 {
-  "package": { "productName": "Splitwriter", "version": "1.0.0-plain" },
+  "package": {
+    "productName": "Splitwriter",
+    "version": "1.1.0-portable"
+  },
   "build": {
     "beforeDevCommand": "vite --port 5173 --strictPort",
     "beforeBuildCommand": "vite build",
@@ -23,11 +26,35 @@
       }
     ],
     "allowlist": {
-      "window": { "all": true },
-      "fs": { "all": true, "scope": ["**"] },
-      "path": { "all": true },
-      "dialog": { "open": true, "save": true, "message": true, "confirm": true },
-      "shell": { "open": true }
+      "window": {
+        "all": true
+      },
+      "fs": {
+        "all": true,
+        "scope": [
+          "**"
+        ]
+      },
+      "path": {
+        "all": true
+      },
+      "dialog": {
+        "open": true,
+        "save": true,
+        "message": true,
+        "confirm": true
+      },
+      "shell": {
+        "open": true,
+        "execute": true,
+        "scope": [
+          {
+            "name": "explorer",
+            "cmd": "explorer.exe",
+            "args": true
+          }
+        ]
+      }
     },
     "security": {
       "csp": "default-src 'self' blob: data: ipc: http://localhost:*; img-src 'self' blob: data: *; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src http://localhost:* ipc:; frame-src 'self' blob: data:"

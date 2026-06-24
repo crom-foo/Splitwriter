@@ -327,6 +327,15 @@ h4[data-sw-paragraph], h5[data-sw-paragraph], h6[data-sw-paragraph]{
 }
 span[data-sw-selmk], span[data-sw-mk]{ display:inline-block; width:0; height:0; overflow:hidden; }
 
+/* ===== TextBoard tab rendering =====
+   실제 저장값은 \t 그대로 두고, 화면에서만 좁게 보여준다. */
+[data-role="editor-root"],
+[data-sw-editor-root],
+[data-sw-editor]{
+  tab-size: 2;
+  -moz-tab-size: 2;
+}
+
 /* ===== Boards: outline/focus ===== */
 [data-role="imageboard"],
 [data-role="textboard"] {
