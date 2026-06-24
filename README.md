@@ -1,9 +1,9 @@
 <p align="center">
   <img
-    width="300"
-    height="400"
+    width="800"
+    height="520"
     alt="Splitwriter Logo"
-    src="./assets/icons/Splitwriter_Logo_White.png"
+    src="./assets/icons/Splitwriter_Logo_Page.png"
   />
 </p>
 
