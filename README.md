@@ -7,6 +7,10 @@
   />
 </p>
 
+## Download
+
+### 👉 [Download Splitwriter for Windows x64](https://github.com/crom-foo/Splitwriter/releases/latest)
+
 # Splitwriter
 
 _For all creators — past, present, and future._
