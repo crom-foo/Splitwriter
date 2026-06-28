@@ -247,7 +247,8 @@ function fragmentToPlainText(frag: DocumentFragment): string {
   return out
     .replace(/\r\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
-    .replace(/^[ \t\r\n]+|[ \t\r\n]+$/g, "");
+    // Keep leading spaces/tabs intact: Splitwriter should preserve author intent.
+    .replace(/^\n+|\n+$/g, "");
 }
 
 // === Ellipsis ===
@@ -283,6 +284,66 @@ function insertEllipsisAtSelection(root: HTMLElement, schedule?: () => void, onC
   schedule?.();
   onChange?.(root.innerHTML);
   onNudge?.(); // If typewriter is ON, adjust scroll position
+}
+
+// === Tab input ===
+// Store a real tab character, and let CSS control how wide it looks.
+const TAB_STR = "\t";
+
+function insertRawTextAtSelection(root: HTMLElement, text: string, schedule?: () => void, onChange?: (h: string)=>void, onNudge?: ()=>void) {
+  const sel = window.getSelection?.();
+  if (!sel || !sel.rangeCount) return;
+  const r = sel.getRangeAt(0);
+  if (!root.contains(r.commonAncestorContainer)) return;
+
+  let done = false;
+  try {
+    if (document.queryCommandSupported?.("insertText")) {
+      done = !!document.execCommand("insertText", false, text);
+    }
+  } catch {
+    done = false;
+  }
+
+  if (!done) {
+    r.deleteContents();
+    const tn = document.createTextNode(text);
+    r.insertNode(tn);
+    r.setStartAfter(tn);
+    r.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(r);
+  }
+
+  ensureParagraphMarkersNearCaret(root);
+  schedule?.();
+  onChange?.(root.innerHTML);
+  onNudge?.();
+}
+
+function textOffsetBeforeNode(root: HTMLElement, node: Node): number {
+  try {
+    const r = document.createRange();
+    r.setStart(root, 0);
+    r.setEnd(node, 0);
+    return r.toString().length;
+  } catch {
+    return 0;
+  }
+}
+
+function removeLeadingTabFromParagraph(p: HTMLElement): boolean {
+  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
+  while (walker.nextNode()) {
+    const t = walker.currentNode as Text;
+    if (!t.data.length) continue;
+    if (t.data.startsWith(TAB_STR)) {
+      t.deleteData(0, TAB_STR.length);
+      return true;
+    }
+    return false;
+  }
+  return false;
 }
 
 type Inset = { top?: number; left?: number };
@@ -985,6 +1046,44 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const code = ev.code;
       const lower = (key ?? "").toLowerCase();
 
+      // Tab: keep the real \t character for export/copy handoff.
+      // CSS decides the visual width via tab-size.
+      if (key === "Tab" && !ctrlOrMeta && !alt) {
+        ev.preventDefault();
+        ev.stopPropagation();
+
+        if (shift) {
+          const r = selectionRangeIn(ed);
+          const p = r ? closestParagraph(r.startContainer) : null;
+          if (p) {
+            const before = getOffsetsIn(ed, window.getSelection?.() || null);
+            const pStart = textOffsetBeforeNode(ed, p);
+            const removed = removeLeadingTabFromParagraph(p);
+            if (removed) {
+              ensureParagraphMarkersNearCaret(ed);
+              if (before) {
+                const adjust = (v: number) => v > pStart ? Math.max(pStart, v - TAB_STR.length) : v;
+                setSelectionIn(ed, adjust(before.start), adjust(before.end));
+              }
+              props.scheduleSave?.();
+              props.onChange?.(ed.innerHTML);
+              goal.bumpGoal();
+              if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true));
+            }
+          }
+        } else {
+          insertRawTextAtSelection(
+            ed,
+            TAB_STR,
+            props.scheduleSave,
+            (h) => props.onChange?.(h),
+            () => { if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true)); }
+          );
+          goal.bumpGoal();
+        }
+        return;
+      }
+
       const isDigit = (want: string) =>
         code === `Digit${want}` || key === want || key === "!@#$"[parseInt(want, 10) - 1];
 
@@ -1275,6 +1374,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
             style={{
               outline: "none",
               whiteSpace: "pre-wrap",
+              tabSize: 2,
               wordBreak: "break-word",
               minHeight: 0,
               padding: "10px 14px",

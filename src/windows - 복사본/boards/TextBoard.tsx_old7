@@ -1720,9 +1720,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   }, [effectiveId, props.curly, props.scheduleSave]);
 
   // WebView/contentEditable can keep the previous caret when moving from a lower paragraph
-  // back to an upper paragraph. Anchor every non-drag LMB release by its real screen
-  // point so the next paste/preset command does not reuse a stale selection.
-  // Drag selections are preserved; double-click word selection is intentionally ignored.
+  // back to an upper paragraph. Anchor single clicks by their real screen point so the
+  // next paste/preset command does not reuse a stale selection.
   useEffect(() => {
     const ed = edRef.current!;
     if (!ed) return;
@@ -1753,15 +1752,15 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       if (!ed.contains(e.target as Node)) { down = null; return; }
       const dx = Math.abs(e.clientX - down.x);
       const dy = Math.abs(e.clientY - down.y);
+      const singleClick = (e.detail || 1) <= 1;
       const isDrag = dx > 4 || dy > 4;
       const pt = { x: e.clientX, y: e.clientY };
       down = null;
-      if (isDrag) return;
+      if (!singleClick || isDrag) return;
 
-      // v5: TextBoard deliberately does not support browser double-click word selection.
-      // Any non-drag LMB release is treated as a plain caret placement.
-      // This keeps accidental double-clicks from leaving a word selection or stale range
-      // that can corrupt the next paste/preset command.
+      // v4: anchor the caret immediately on mouseup instead of waiting for RAF.
+      // In WebView the stale/native selection can briefly collapse to document start;
+      // doing this synchronously removes most of the visible "jump then return".
       const anchoredNow = placeCaretFromPointInEditor(ed, pt.x, pt.y);
       if (anchoredNow) {
         lastClickPointRef.current = { x: pt.x, y: pt.y, t: performance.now(), dirty: false };

@@ -75,6 +75,20 @@ function _basename(p?: string | null): string {
   return m ? m[0] : String(p);
 }
 
+function _normPath(p?: string | null): string {
+  return String(p || "")
+    .replace(/^\\\\\?\\/, "")
+    .replace(/\\/g, "/")
+    .replace(/\/+$/, "")
+    .toLowerCase();
+}
+
+function _samePath(a?: string | null, b?: string | null): boolean {
+  const aa = _normPath(a);
+  const bb = _normPath(b);
+  return !!aa && !!bb && aa === bb;
+}
+
 function currentFileLabel(): string {
   try {
     const p = (window as any).__SW_CURRENT_FILE__ as string | undefined;
@@ -170,7 +184,7 @@ export function initAppActions(deps: Deps) {
 async function trySave(): Promise<boolean> {
   const { io } = need();
   try {
-    await io.save(); // Save or Save As(경로 없을 때)
+    await save(); // Save or Save As(경로 없을 때)
     return !io.isDirty();
   } catch {
     return false;
@@ -183,8 +197,8 @@ function ensureSwonExt(p: string) {
 
 /* ---------- actions ---------- */
 
-export async function save() {
-  const { io } = need();
+export async function save(): Promise<string | null> {
+  const { io, hasBoundFileRef } = need();
   const before = _readGlobalPath() || currentFilePath;
   const ret = await io.save(); // void | string | null
 
@@ -194,7 +208,13 @@ export async function save() {
     before ||
     null;
 
-  if (path) noteCurrentFile(path);
+  if (path) {
+    noteCurrentFile(path);
+    hasBoundFileRef.current = true;
+    return path;
+  }
+
+  return null;
 }
 
 /**
@@ -292,7 +312,7 @@ export async function openByPath(absPath: string): Promise<void> {
 
   // 이미 같은 파일이면 무시
   const before = _readGlobalPath() || currentFilePath;
-  if (before && before === absPath) return;
+  if (_samePath(before, absPath)) return;
 
   // 변경사항 경고
   if (io.isDirty() && !(await ask(messages.OPEN))) return;

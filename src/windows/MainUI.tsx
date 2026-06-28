@@ -101,7 +101,7 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
 
 // --- AppVersion (UI 표기: Tauri면 실제 버전, 웹이면 fallback) ---
 const AppVersion: React.FC<{ fallback?: string }> = ({
-  fallback = "v1.1.0-portable",
+  fallback = "v1.1.1-portable",
 }) => {
   const [v, setV] = React.useState<string>(fallback);
 
@@ -2924,7 +2924,7 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         >
           {/* left: version */}
           <span style={{ opacity: 0.8, whiteSpace: "nowrap" }}>
-            <AppVersion fallback="v1.1.0-portable" />
+            <AppVersion fallback="v1.1.1-portable" />
           </span>
 
           {/* center: repo link (accent only) */}

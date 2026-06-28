@@ -752,79 +752,6 @@ function setCaretInParagraphTextOffset(p: HTMLElement, offset: number) {
   sel.addRange(r);
 }
 
-
-function makeRangeInParagraphTextOffset(p: HTMLElement, offset: number): Range | null {
-  const want = Math.max(0, Number(offset) || 0);
-  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-  let pos = 0;
-  let target: Text | null = null;
-  let targetOff = 0;
-
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    const len = t.data.length;
-    if (want <= pos + len) {
-      target = t;
-      targetOff = Math.max(0, Math.min(len, want - pos));
-      break;
-    }
-    pos += len;
-  }
-
-  if (!target) {
-    target = document.createTextNode("");
-    const br = Array.from(p.childNodes).find(n => n.nodeName === "BR") || null;
-    p.insertBefore(target, br);
-    targetOff = 0;
-  }
-
-  const r = document.createRange();
-  r.setStart(target, targetOff);
-  r.collapse(true);
-  return r;
-}
-
-function placeCaretFromPointInEditor(ed: HTMLElement, x: number, y: number): boolean {
-  const sel = window.getSelection?.();
-  if (!sel || !ed) return false;
-
-  let r: Range | null = null;
-  try {
-    const docAny = document as any;
-    if (typeof docAny.caretRangeFromPoint === "function") {
-      r = docAny.caretRangeFromPoint(x, y) as Range | null;
-    } else if (typeof docAny.caretPositionFromPoint === "function") {
-      const pos = docAny.caretPositionFromPoint(x, y);
-      if (pos?.offsetNode) {
-        r = document.createRange();
-        r.setStart(pos.offsetNode, pos.offset || 0);
-        r.collapse(true);
-      }
-    }
-  } catch {
-    r = null;
-  }
-
-  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-  const hitP = hit?.closest?.(PSEL) as HTMLElement | null;
-
-  // WebView sometimes returns the editor root boundary instead of the text node.
-  // Accept point ranges only when they resolve to a real paragraph.
-  if (!r || !ed.contains(r.startContainer) || !closestParagraph(r.startContainer)) {
-    if (!hitP || !ed.contains(hitP)) return false;
-    const rect = hitP.getBoundingClientRect();
-    const textLen = (hitP.textContent || "").length;
-    const edgeOffset = x > rect.left + rect.width / 2 ? textLen : 0;
-    r = makeRangeInParagraphTextOffset(hitP, edgeOffset);
-  }
-
-  if (!r) return false;
-  try { ed.focus({ preventScroll: true } as any); } catch {}
-  sel.removeAllRanges();
-  sel.addRange(r);
-  return true;
-}
-
 function insertPlainTextStrict(ed: HTMLElement, text: string): boolean {
   const sel = window.getSelection?.();
   if (!sel || !sel.rangeCount) return false;
@@ -949,7 +876,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const nextPresetRef = useRef<Preset | undefined>(undefined);
   const spacerRef = useRef<HTMLDivElement>(null);
   const lastSelRef = useRef<{ start: number; end: number } | null>(null);
-  const lastClickPointRef = useRef<{ x: number; y: number; t: number; dirty: boolean } | null>(null);
   const goal = useWritingGoal(edRef as React.RefObject<HTMLElement>, props.writingGoal);
   const [echoOpen, setEchoOpen] = React.useState(false);
   const [echoText, setEchoText] = React.useState("");
@@ -1115,20 +1041,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     else { r.setStart(sNode, sOff); r.setEnd(eNode, eOff); }
     sel.removeAllRanges();
     sel.addRange(r);
-  }
-
-
-  function restoreRecentClickCaretIfSafe(maxAgeMs = 8000): boolean {
-    const ed = edRef.current;
-    const a = lastClickPointRef.current;
-    if (!ed || !a || a.dirty) return false;
-    if (performance.now() - a.t > maxAgeMs) return false;
-
-    const sel = window.getSelection?.();
-    // Do not destroy an intentional selection made by drag/shift/double-click.
-    if (sel && sel.rangeCount && !sel.isCollapsed) return false;
-
-    return placeCaretFromPointInEditor(ed, a.x, a.y);
   }
 
   function getCaretRectFromSelection(sel: Selection): DOMRect | null {
@@ -1323,7 +1235,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   useEffect(() => {
     const ed = edRef.current!;
     const onInput = () => {
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
       if (editorNeedsStrictParagraphNormalize(ed)) normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
       else ensureParagraphMarkersNearCaret(ed);
       props.onChange?.(ed.innerHTML);
@@ -1356,7 +1267,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       if (inputType !== "insertParagraph") return;
       e.preventDefault();
       e.stopPropagation();
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
       if (!insertParagraphBreakStrict(ed)) return;
       props.scheduleSave?.();
       props.onChange?.(ed.innerHTML);
@@ -1481,7 +1391,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   const applyPreset = (preset: Preset) => {
     const ed = edRef.current!;
-    restoreRecentClickCaretIfSafe();
     // Read selection before focus. Focusing from toolbar/topbar can collapse
     // contentEditable selection to the document start in WebView when caret is
     // in a middle paragraph.
@@ -1496,7 +1405,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   const align = (kind: "left" | "center" | "right" | "justify") => {
     const ed = edRef.current!;
-    restoreRecentClickCaretIfSafe();
     const targets = paragraphsInSelection(ed);
     targets.forEach((p) => (p.style.textAlign = kind === "justify" ? "justify" : kind));
     props.scheduleSave?.();
@@ -1593,7 +1501,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
         if (p) {
           ev.preventDefault(); ev.stopPropagation();
-          restoreRecentClickCaretIfSafe();
           const r = selectionRangeIn(ed);
           if (!r) { nextPresetRef.current = p; return; }
           doApplyPreset(p);
@@ -1668,9 +1575,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       e.preventDefault();
       e.stopPropagation();
       const text = e.clipboardData?.getData("text/plain") ?? "";
-      restoreRecentClickCaretIfSafe();
       insertPlainTextStrict(ed, text);
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
       props.scheduleSave?.();
       props.onChange?.(ed.innerHTML);
       goal.bumpGoal();
@@ -1718,81 +1623,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     });
     return () => ctl.destroy();
   }, [effectiveId, props.curly, props.scheduleSave]);
-
-  // WebView/contentEditable can keep the previous caret when moving from a lower paragraph
-  // back to an upper paragraph. Anchor every non-drag LMB release by its real screen
-  // point so the next paste/preset command does not reuse a stale selection.
-  // Drag selections are preserved; double-click word selection is intentionally ignored.
-  useEffect(() => {
-    const ed = edRef.current!;
-    if (!ed) return;
-
-    let down: { x: number; y: number; t: number } | null = null;
-
-    const markDirtyByKey = (e: KeyboardEvent) => {
-      if (!lastClickPointRef.current) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const k = e.key || "";
-      if (
-        k.length === 1 ||
-        k === "Backspace" || k === "Delete" || k === "Enter" || k === "Tab" ||
-        k.startsWith("Arrow") || k === "Home" || k === "End" || k === "PageUp" || k === "PageDown"
-      ) {
-        lastClickPointRef.current.dirty = true;
-      }
-    };
-
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      if (!ed.contains(e.target as Node)) return;
-      down = { x: e.clientX, y: e.clientY, t: performance.now() };
-    };
-
-    const onMouseUp = (e: MouseEvent) => {
-      if (e.button !== 0 || !down) return;
-      if (!ed.contains(e.target as Node)) { down = null; return; }
-      const dx = Math.abs(e.clientX - down.x);
-      const dy = Math.abs(e.clientY - down.y);
-      const isDrag = dx > 4 || dy > 4;
-      const pt = { x: e.clientX, y: e.clientY };
-      down = null;
-      if (isDrag) return;
-
-      // v5: TextBoard deliberately does not support browser double-click word selection.
-      // Any non-drag LMB release is treated as a plain caret placement.
-      // This keeps accidental double-clicks from leaving a word selection or stale range
-      // that can corrupt the next paste/preset command.
-      const anchoredNow = placeCaretFromPointInEditor(ed, pt.x, pt.y);
-      if (anchoredNow) {
-        lastClickPointRef.current = { x: pt.x, y: pt.y, t: performance.now(), dirty: false };
-      }
-
-      // Safety pass: if WebView applies a late native selection after mouseup, repair it
-      // before the next command. Do not touch intentional selections.
-      requestAnimationFrame(() => {
-        const sel = window.getSelection?.();
-        if (!lastClickPointRef.current || lastClickPointRef.current.dirty) return;
-        if (sel && sel.rangeCount && !sel.isCollapsed) return;
-
-        const hit = document.elementFromPoint(pt.x, pt.y) as HTMLElement | null;
-        const intendedP = hit?.closest?.(PSEL) as HTMLElement | null;
-        const currentP = sel && sel.rangeCount ? closestParagraph(sel.getRangeAt(0).startContainer) : null;
-
-        if (intendedP && currentP !== intendedP) {
-          placeCaretFromPointInEditor(ed, pt.x, pt.y);
-        }
-      });
-    };
-
-    ed.addEventListener("mousedown", onMouseDown, true);
-    ed.addEventListener("mouseup", onMouseUp, true);
-    ed.addEventListener("keydown", markDirtyByKey, true);
-    return () => {
-      ed.removeEventListener("mousedown", onMouseDown, true);
-      ed.removeEventListener("mouseup", onMouseUp, true);
-      ed.removeEventListener("keydown", markDirtyByKey, true);
-    };
-  }, []);
 
   useEffect(() => {
     const ed = edRef.current!;

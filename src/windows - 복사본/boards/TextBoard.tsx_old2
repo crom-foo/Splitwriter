@@ -6,6 +6,7 @@ import { createPortal } from "react-dom";
 import WindowResizeEdges from "../ui/WindowResizeEdges";
 import TextToolbar, { TOOLBAR_H } from "../ui/TextToolbar";
 import { attachUndoCurly } from "../runtime/undo-snapshot";
+import { plaintextToParagraphHTML } from "../runtime/paste";
 import { normalizeCurly, type CurlyPref } from "../runtime/curly";
 import { useWritingGoal } from "../runtime/writingGoal";
 import EchoReader from "../ui/EchoView";
@@ -462,494 +463,12 @@ function countEndedBefore(paraText: string, caretOff: number): number {
   return cnt;
 }
 
-
-
-/* ─────────────────────────────────────────────
-   Strict paragraph model TEST helpers
-   Rule: editor root children must be only <p data-sw-paragraph> nodes.
-   A visible line/paragraph is one data-sw-paragraph node; <br> is allowed
-   only as an empty-paragraph placeholder.
-   ───────────────────────────────────────────── */
-function strictTextOffsets(root: HTMLElement, sel: Selection | null): { start: number; end: number } | null {
-  if (!root || !sel || sel.rangeCount === 0) return null;
-  const r = sel.getRangeAt(0);
-  if (!root.contains(r.startContainer) || !root.contains(r.endContainer)) return null;
-
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let start = 0, end = 0, pos = 0;
-  let gotS = false, gotE = false;
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    const len = t.data.length;
-    if (!gotS && r.startContainer === t) { start = pos + r.startOffset; gotS = true; }
-    if (!gotE && r.endContainer === t) { end = pos + r.endOffset; gotE = true; }
-    pos += len;
-  }
-
-  // Element-boundary selections are common around empty paragraphs.
-  if (!gotS || !gotE) {
-    try {
-      const pre = document.createRange();
-      pre.setStart(root, 0);
-      pre.setEnd(r.startContainer, Math.min(r.startOffset, (r.startContainer as any).length ?? r.startOffset));
-      const s = pre.toString().length;
-      const pre2 = document.createRange();
-      pre2.setStart(root, 0);
-      pre2.setEnd(r.endContainer, Math.min(r.endOffset, (r.endContainer as any).length ?? r.endOffset));
-      const e = pre2.toString().length;
-      return { start: s, end: e };
-    } catch {
-      return { start: pos, end: pos };
-    }
-  }
-  return { start, end };
-}
-
-function restoreStrictTextOffsets(root: HTMLElement, start: number, end: number) {
-  const sel = window.getSelection?.();
-  if (!sel) return;
-
-  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-  let pos = 0, sNode: Text | null = null, eNode: Text | null = null;
-  let sOff = 0, eOff = 0;
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    const len = t.data.length;
-    if (!sNode && start <= pos + len) { sNode = t; sOff = Math.max(0, Math.min(len, start - pos)); }
-    if (!eNode && end <= pos + len) { eNode = t; eOff = Math.max(0, Math.min(len, end - pos)); break; }
-    pos += len;
-  }
-
-  const r = document.createRange();
-  if (!sNode) {
-    const firstP = root.querySelector(PSEL) as HTMLElement | null;
-    if (firstP) r.setStart(firstP, 0);
-    else r.setStart(root, 0);
-    r.collapse(true);
-  } else if (!eNode) {
-    r.setStart(sNode, sOff);
-    r.collapse(true);
-  } else {
-    r.setStart(sNode, sOff);
-    r.setEnd(eNode, eOff);
-  }
-  sel.removeAllRanges();
-  sel.addRange(r);
-}
-
-function strictAlignOf(el?: HTMLElement | null): "left" | "center" | "right" | "justify" {
-  const v = (el?.style?.textAlign || "").toLowerCase();
-  return v === "left" || v === "center" || v === "right" || v === "justify" ? (v as any) : "justify";
-}
-
-function strictHasMeaningfulContent(n: Node): boolean {
-  if (n.nodeType === 3) return (n.textContent || "").length > 0;
-  if (n.nodeType === 11) return Array.from(n.childNodes).some(strictHasMeaningfulContent);
-  if (n.nodeType !== 1) return false;
-  const el = n as HTMLElement;
-  if (el.tagName === "BR") return false;
-  return (el.textContent || "").length > 0 || Array.from(el.childNodes).some(strictHasMeaningfulContent);
-}
-
-function stripUnsafeCloneAttrs(el: HTMLElement) {
-  el.removeAttribute("contenteditable");
-  el.removeAttribute("data-sw-paragraph");
-  el.removeAttribute("data-sw-editor");
-  el.removeAttribute("data-role");
-  el.removeAttribute("spellcheck");
-}
-
-function splitNodesToLineFragments(nodes: NodeListOf<ChildNode> | ChildNode[]): DocumentFragment[] {
-  const lines: DocumentFragment[] = [document.createDocumentFragment()];
-  const current = () => lines[lines.length - 1];
-  const newLine = () => lines.push(document.createDocumentFragment());
-
-  const appendText = (s: string) => {
-    const parts = String(s || "").replace(/\r\n?/g, "\n").split("\n");
-    parts.forEach((part, i) => {
-      if (i > 0) newLine();
-      if (part.length) current().appendChild(document.createTextNode(part));
-    });
-  };
-
-  const appendFragmentMoved = (frag: DocumentFragment, target: Node) => {
-    while (frag.firstChild) target.appendChild(frag.firstChild);
-  };
-
-  const appendInlineElement = (el: HTMLElement) => {
-    const parts = splitNodesToLineFragments(Array.from(el.childNodes) as ChildNode[]);
-    parts.forEach((part, i) => {
-      if (i > 0) newLine();
-      if (!strictHasMeaningfulContent(part)) return;
-      const shell = el.cloneNode(false) as HTMLElement;
-      stripUnsafeCloneAttrs(shell);
-      appendFragmentMoved(part, shell);
-      current().appendChild(shell);
-    });
-  };
-
-  const appendBlockElement = (el: HTMLElement) => {
-    const parts = splitNodesToLineFragments(Array.from(el.childNodes) as ChildNode[]);
-    parts.forEach((part, i) => {
-      if (i > 0 || strictHasMeaningfulContent(current())) newLine();
-      appendFragmentMoved(part, current());
-    });
-    // A nested block represents a real paragraph boundary.
-    if (strictHasMeaningfulContent(current())) newLine();
-  };
-
-  const walk = (node: Node) => {
-    if (node.nodeType === 3) { appendText(node.nodeValue || ""); return; }
-    if (node.nodeType !== 1) return;
-    const el = node as HTMLElement;
-    const tag = el.tagName.toUpperCase();
-    if (tag === "BR") { newLine(); return; }
-    if (el.matches(PSEL) || tag === "P" || tag === "DIV") { appendBlockElement(el); return; }
-    appendInlineElement(el);
-  };
-
-  Array.from(nodes as any).forEach(walk);
-
-  // Trim only trailing empty fragments created by block boundaries; preserve intentional blanks inside.
-  while (lines.length > 1 && !strictHasMeaningfulContent(lines[lines.length - 1])) lines.pop();
-  return lines;
-}
-
-function makeStrictParagraphFromFragment(
-  frag: DocumentFragment,
-  preset: Preset = 2,
-  align: "left" | "center" | "right" | "justify" = "justify"
-): HTMLParagraphElement {
-  const p = document.createElement("p");
-  p.setAttribute("data-sw-paragraph", "1");
-  p.classList.add(`sw-preset-${preset}`);
-  p.style.textAlign = align;
-  if (strictHasMeaningfulContent(frag)) p.appendChild(frag);
-  else p.appendChild(document.createElement("br"));
-  return p;
-}
-
-function makeStrictTextParagraph(
-  text: string,
-  preset: Preset = 2,
-  align: "left" | "center" | "right" | "justify" = "justify"
-): HTMLParagraphElement {
-  const frag = document.createDocumentFragment();
-  if (text.length) frag.appendChild(document.createTextNode(text));
-  return makeStrictParagraphFromFragment(frag, preset, align);
-}
-
-function removePlaceholderBR(p: HTMLElement) {
-  if (p.childNodes.length === 1 && p.firstChild?.nodeName === "BR") p.textContent = "";
-}
-
-function ensureParagraphNotVisuallyEmpty(p: HTMLElement) {
-  if (!strictHasMeaningfulContent(p)) {
-    p.textContent = "";
-    p.appendChild(document.createElement("br"));
-  }
-}
-
-function editorNeedsStrictParagraphNormalize(ed: HTMLElement): boolean {
-  if (!ed.querySelector(PSEL)) return true;
-  for (const n of Array.from(ed.childNodes)) {
-    if (n.nodeType === 3 && (n.textContent || "").length > 0) return true;
-    if (n.nodeType !== 1) continue;
-    const el = n as HTMLElement;
-    if (el.tagName === "BR") return true;
-    if (!el.matches(PSEL)) return true;
-    if (el.querySelector("p,div,[data-sw-paragraph]")) return true;
-    const brs = Array.from(el.querySelectorAll("br"));
-    if (brs.length > 1) return true;
-    if (brs.length === 1 && ((el.textContent || "").length > 0 || el.childNodes.length > 1)) return true;
-  }
-  return false;
-}
-
-function normalizeEditorParagraphsStrict(ed: HTMLElement, opts: { preserveSelection?: boolean } = {}): boolean {
-  const saved = opts.preserveSelection ? strictTextOffsets(ed, window.getSelection?.() || null) : null;
-  const paras: HTMLElement[] = [];
-
-  const addLines = (lines: DocumentFragment[], preset: Preset, align: "left" | "center" | "right" | "justify") => {
-    for (const line of lines) paras.push(makeStrictParagraphFromFragment(line, preset, align));
-  };
-
-  for (const node of Array.from(ed.childNodes)) {
-    if (node.nodeType === 3) {
-      const lines = splitNodesToLineFragments([node as ChildNode]);
-      addLines(lines, 2, "justify");
-      continue;
-    }
-    if (node.nodeType !== 1) continue;
-    const el = node as HTMLElement;
-    if (el.tagName === "BR") {
-      paras.push(makeStrictTextParagraph("", 2, "justify"));
-      continue;
-    }
-    const preset = getPresetOf(el.matches(PSEL) ? el : closestParagraph(el));
-    const align = strictAlignOf(el);
-    const lines = splitNodesToLineFragments(Array.from(el.childNodes) as ChildNode[]);
-    addLines(lines.length ? lines : [document.createDocumentFragment()], preset, align);
-  }
-
-  if (!paras.length) paras.push(makeStrictTextParagraph("", 2, "justify"));
-  ed.replaceChildren(...paras);
-
-  if (saved) {
-    restoreStrictTextOffsets(ed, saved.start, saved.end);
-    try { ed.focus({ preventScroll: true } as any); } catch {}
-  }
-  return true;
-}
-
-function setCaretWithMarker(marker: Node) {
-  const sel = window.getSelection?.();
-  const parent = marker.parentNode as HTMLElement | null;
-  if (!sel || !parent) return;
-  const r = document.createRange();
-  r.setStartBefore(marker);
-  r.collapse(true);
-  sel.removeAllRanges();
-  sel.addRange(r);
-  marker.parentNode?.removeChild(marker);
-  if (parent.matches?.(PSEL)) ensureParagraphNotVisuallyEmpty(parent);
-}
-
-function setCaretInParagraphTextOffset(p: HTMLElement, offset: number) {
-  const sel = window.getSelection?.();
-  if (!sel) return;
-
-  const want = Math.max(0, Number(offset) || 0);
-  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-  let pos = 0;
-  let target: Text | null = null;
-  let targetOff = 0;
-
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    const len = t.data.length;
-    if (want <= pos + len) {
-      target = t;
-      targetOff = Math.max(0, Math.min(len, want - pos));
-      break;
-    }
-    pos += len;
-  }
-
-  if (!target) {
-    // Empty paragraphs and element-boundary ranges are fragile in WebView/contentEditable.
-    // Keep an empty text node as a stable caret anchor before the placeholder <br>.
-    target = document.createTextNode("");
-    const br = Array.from(p.childNodes).find(n => n.nodeName === "BR") || null;
-    p.insertBefore(target, br);
-    targetOff = 0;
-  }
-
-  const r = document.createRange();
-  r.setStart(target, targetOff);
-  r.collapse(true);
-  sel.removeAllRanges();
-  sel.addRange(r);
-}
-
-
-function makeRangeInParagraphTextOffset(p: HTMLElement, offset: number): Range | null {
-  const want = Math.max(0, Number(offset) || 0);
-  const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
-  let pos = 0;
-  let target: Text | null = null;
-  let targetOff = 0;
-
-  while (walker.nextNode()) {
-    const t = walker.currentNode as Text;
-    const len = t.data.length;
-    if (want <= pos + len) {
-      target = t;
-      targetOff = Math.max(0, Math.min(len, want - pos));
-      break;
-    }
-    pos += len;
-  }
-
-  if (!target) {
-    target = document.createTextNode("");
-    const br = Array.from(p.childNodes).find(n => n.nodeName === "BR") || null;
-    p.insertBefore(target, br);
-    targetOff = 0;
-  }
-
-  const r = document.createRange();
-  r.setStart(target, targetOff);
-  r.collapse(true);
-  return r;
-}
-
-function placeCaretFromPointInEditor(ed: HTMLElement, x: number, y: number): boolean {
-  const sel = window.getSelection?.();
-  if (!sel || !ed) return false;
-
-  let r: Range | null = null;
-  try {
-    const docAny = document as any;
-    if (typeof docAny.caretRangeFromPoint === "function") {
-      r = docAny.caretRangeFromPoint(x, y) as Range | null;
-    } else if (typeof docAny.caretPositionFromPoint === "function") {
-      const pos = docAny.caretPositionFromPoint(x, y);
-      if (pos?.offsetNode) {
-        r = document.createRange();
-        r.setStart(pos.offsetNode, pos.offset || 0);
-        r.collapse(true);
-      }
-    }
-  } catch {
-    r = null;
-  }
-
-  const hit = document.elementFromPoint(x, y) as HTMLElement | null;
-  const hitP = hit?.closest?.(PSEL) as HTMLElement | null;
-
-  // WebView sometimes returns the editor root boundary instead of the text node.
-  // Accept point ranges only when they resolve to a real paragraph.
-  if (!r || !ed.contains(r.startContainer) || !closestParagraph(r.startContainer)) {
-    if (!hitP || !ed.contains(hitP)) return false;
-    const rect = hitP.getBoundingClientRect();
-    const textLen = (hitP.textContent || "").length;
-    const edgeOffset = x > rect.left + rect.width / 2 ? textLen : 0;
-    r = makeRangeInParagraphTextOffset(hitP, edgeOffset);
-  }
-
-  if (!r) return false;
-  try { ed.focus({ preventScroll: true } as any); } catch {}
-  sel.removeAllRanges();
-  sel.addRange(r);
-  return true;
-}
-
-function insertPlainTextStrict(ed: HTMLElement, text: string): boolean {
-  const sel = window.getSelection?.();
-  if (!sel || !sel.rangeCount) return false;
-  let r = selectionRangeIn(ed);
-  if (!r) {
-    placeCaretAtEnd(ed);
-    r = selectionRangeIn(ed);
-    if (!r) return false;
-  }
-
-  const clean = String(text ?? "").replace(/\r\n?/g, "\n");
-  const lines = clean.split("\n");
-
-  // Native-like behavior: single-line paste is inline text, not a new paragraph.
-  if (lines.length <= 1) {
-    r.deleteContents();
-    const tn = document.createTextNode(lines[0] || "");
-    r.insertNode(tn);
-    const after = document.createRange();
-    after.setStartAfter(tn);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
-    if (editorNeedsStrictParagraphNormalize(ed)) normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
-    return true;
-  }
-
-  r.deleteContents();
-  r = sel.rangeCount ? sel.getRangeAt(0) : r;
-
-  let curP = closestParagraph(r.startContainer);
-  if (!curP) {
-    normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
-    r = selectionRangeIn(ed) || r;
-    curP = closestParagraph(r.startContainer) || (ed.querySelector(PSEL) as HTMLElement | null);
-  }
-  if (!curP) return false;
-
-  const inherit = getPresetOf(curP);
-  const align = strictAlignOf(curP);
-  removePlaceholderBR(curP);
-
-  // Detach the original tail so multiline paste behaves like normal editors:
-  // before + first pasted line / middle lines / last pasted line + original tail.
-  const afterRange = document.createRange();
-  afterRange.setStart(r.startContainer, r.startOffset);
-  afterRange.setEnd(curP, curP.childNodes.length);
-  const afterFrag = afterRange.cloneContents();
-  afterRange.deleteContents();
-
-  if (lines[0].length) curP.appendChild(document.createTextNode(lines[0]));
-  ensureParagraphNotVisuallyEmpty(curP);
-
-  let ref: HTMLElement = curP;
-  const lastIndex = lines.length - 1;
-  let caretP: HTMLElement | null = null;
-  let caretOffset = 0;
-
-  for (let i = 1; i <= lastIndex; i++) {
-    const p = makeStrictTextParagraph(lines[i] || "", inherit, align);
-    removePlaceholderBR(p);
-    if (lines[i].length) p.textContent = lines[i];
-    if (i === lastIndex) {
-      caretP = p;
-      caretOffset = lines[i].length;
-      while (afterFrag.firstChild) p.appendChild(afterFrag.firstChild);
-      ensureParagraphNotVisuallyEmpty(p);
-    } else {
-      ensureParagraphNotVisuallyEmpty(p);
-    }
-    ref.parentNode?.insertBefore(p, ref.nextSibling);
-    ref = p;
-  }
-
-  // Do not run a global text-offset restore here. Middle-paragraph paste changes the
-  // paragraph topology, so global offsets can map back to document start. Put the
-  // caret directly in the last inserted paragraph, before the original tail.
-  if (caretP) setCaretInParagraphTextOffset(caretP, caretOffset);
-  return true;
-}
-
-function insertParagraphBreakStrict(ed: HTMLElement): boolean {
-  const sel = window.getSelection?.();
-  if (!sel || !sel.rangeCount) return false;
-  let r = selectionRangeIn(ed);
-  if (!r) return false;
-
-  r.deleteContents();
-  r = sel.rangeCount ? sel.getRangeAt(0) : r;
-
-  let curP = closestParagraph(r.startContainer);
-  if (!curP) {
-    normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
-    r = selectionRangeIn(ed) || r;
-    curP = closestParagraph(r.startContainer) || (ed.querySelector(PSEL) as HTMLElement | null);
-  }
-  if (!curP) return false;
-
-  const inherit = getPresetOf(curP);
-  const align = strictAlignOf(curP);
-  removePlaceholderBR(curP);
-
-  const afterRange = document.createRange();
-  afterRange.setStart(r.startContainer, r.startOffset);
-  afterRange.setEnd(curP, curP.childNodes.length);
-  const afterFrag = afterRange.cloneContents();
-  afterRange.deleteContents();
-  ensureParagraphNotVisuallyEmpty(curP);
-
-  const nextP = makeStrictParagraphFromFragment(afterFrag, inherit, align);
-  curP.parentNode?.insertBefore(nextP, curP.nextSibling);
-
-  removePlaceholderBR(nextP);
-  ensureParagraphNotVisuallyEmpty(nextP);
-  setCaretInParagraphTextOffset(nextP, 0);
-  return true;
-}
-
 export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref) {
   const edRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const nextPresetRef = useRef<Preset | undefined>(undefined);
   const spacerRef = useRef<HTMLDivElement>(null);
   const lastSelRef = useRef<{ start: number; end: number } | null>(null);
-  const lastClickPointRef = useRef<{ x: number; y: number; t: number; dirty: boolean } | null>(null);
   const goal = useWritingGoal(edRef as React.RefObject<HTMLElement>, props.writingGoal);
   const [echoOpen, setEchoOpen] = React.useState(false);
   const [echoText, setEchoText] = React.useState("");
@@ -1115,20 +634,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     else { r.setStart(sNode, sOff); r.setEnd(eNode, eOff); }
     sel.removeAllRanges();
     sel.addRange(r);
-  }
-
-
-  function restoreRecentClickCaretIfSafe(maxAgeMs = 8000): boolean {
-    const ed = edRef.current;
-    const a = lastClickPointRef.current;
-    if (!ed || !a || a.dirty) return false;
-    if (performance.now() - a.t > maxAgeMs) return false;
-
-    const sel = window.getSelection?.();
-    // Do not destroy an intentional selection made by drag/shift/double-click.
-    if (sel && sel.rangeCount && !sel.isCollapsed) return false;
-
-    return placeCaretFromPointInEditor(ed, a.x, a.y);
   }
 
   function getCaretRectFromSelection(sel: Selection): DOMRect | null {
@@ -1313,7 +818,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   useEffect(() => {
     const ed = edRef.current!;
     if (props.initialHTML) ed.innerHTML = props.initialHTML;
-    normalizeEditorParagraphsStrict(ed, { preserveSelection: false });
+    ensureParagraphMarkers(ed);
     emitHud({ preset: getPresetOf(ed.querySelector(PSEL) as HTMLElement | null) });
     props.onChange?.(ed.innerHTML);
     goal.bumpGoal();
@@ -1323,15 +828,13 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   useEffect(() => {
     const ed = edRef.current!;
     const onInput = () => {
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
-      if (editorNeedsStrictParagraphNormalize(ed)) normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
-      else ensureParagraphMarkersNearCaret(ed);
+      ensureParagraphMarkersNearCaret(ed);
       props.onChange?.(ed.innerHTML);
       goal.bumpGoal();
     };
     const onCompEnd = () => props.onChange?.(ed.innerHTML);
     const onDrop = () => setTimeout(() => {
-      normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
+      ensureParagraphMarkers(ed);
       props.onChange?.(ed.innerHTML);
       goal.bumpGoal();
     }, 0);
@@ -1346,27 +849,35 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     };
   }, [props.onChange]);
 
-  // Strict paragraph model: Enter creates exactly one root-level paragraph.
+  // Inherit preset for the newly created paragraph (Enter)
   useEffect(() => {
     const ed = edRef.current!;
     if (!ed) return;
 
     const onBeforeInput = (e: InputEvent) => {
-      const inputType = (e as any).inputType;
-      if (inputType !== "insertParagraph") return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
-      if (!insertParagraphBreakStrict(ed)) return;
-      props.scheduleSave?.();
-      props.onChange?.(ed.innerHTML);
-      goal.bumpGoal();
-      if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true));
+      // Only for Enter
+      if ((e as any).inputType !== "insertParagraph") return;
+
+      const sel = window.getSelection?.();
+      if (!sel || !sel.rangeCount) return;
+
+      const srcP = closestParagraph(sel.getRangeAt(0).startContainer);
+      const inherit = getPresetOf(srcP as any);
+
+      // Two-RAF snap: keep the caret near the typewriter target line after DOM insertion
+      requestAnimationFrame(() => {
+        ensureParagraphMarkersNearCaret(ed);
+        const curSel = window.getSelection?.();
+        if (!curSel || !curSel.rangeCount) return;
+        const curP = closestParagraph(curSel.getRangeAt(0).startContainer);
+        if (curP) applyPresetToParagraph(curP, inherit);
+        props.onChange?.(ed.innerHTML);
+      });
     };
 
     ed.addEventListener("beforeinput", onBeforeInput as any, true);
     return () => ed.removeEventListener("beforeinput", onBeforeInput as any, true);
-  }, [props.onChange, props.scheduleSave]);
+  }, [props.onChange]);
 
   // On selection change: update HUD + apply pending preset + refresh spell scope
   useEffect(() => {
@@ -1481,22 +992,14 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   const applyPreset = (preset: Preset) => {
     const ed = edRef.current!;
-    restoreRecentClickCaretIfSafe();
-    // Read selection before focus. Focusing from toolbar/topbar can collapse
-    // contentEditable selection to the document start in WebView when caret is
-    // in a middle paragraph.
+    focus();
     const r = selectionRangeIn(ed);
-    if (!r) {
-      focus();
-      nextPresetRef.current = preset;
-      return;
-    }
+    if (!r) { nextPresetRef.current = preset; return; }
     doApplyPreset(preset);
   };
 
   const align = (kind: "left" | "center" | "right" | "justify") => {
     const ed = edRef.current!;
-    restoreRecentClickCaretIfSafe();
     const targets = paragraphsInSelection(ed);
     targets.forEach((p) => (p.style.textAlign = kind === "justify" ? "justify" : kind));
     props.scheduleSave?.();
@@ -1510,7 +1013,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const setHTML = (html: string) => {
     const ed = edRef.current!;
     ed.innerHTML = html || "";
-    normalizeEditorParagraphsStrict(ed, { preserveSelection: false });
+    ensureParagraphMarkers(ed);
     props.onChange?.(ed.innerHTML);
     goal.bumpGoal();
   };
@@ -1593,7 +1096,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
         if (p) {
           ev.preventDefault(); ev.stopPropagation();
-          restoreRecentClickCaretIfSafe();
           const r = selectionRangeIn(ed);
           if (!r) { nextPresetRef.current = p; return; }
           doApplyPreset(p);
@@ -1661,24 +1163,36 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     return () => ed.removeEventListener("keydown", onKey as any, true);
   }, [props.scheduleSave]);
 
-  /* ---- Paste: strict plaintext insertion; no execCommand("insertHTML") ---- */
+  /* ---- Paste: always text/plain; preserve empty lines as <p> ---- */
   useEffect(() => {
     const ed = edRef.current!;
     const onPaste = (e: ClipboardEvent) => {
       e.preventDefault();
-      e.stopPropagation();
       const text = e.clipboardData?.getData("text/plain") ?? "";
-      restoreRecentClickCaretIfSafe();
-      insertPlainTextStrict(ed, text);
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
+      const html = plaintextToParagraphHTML(text, 2, "justify");
+      try { document.execCommand("insertHTML", false, html); }
+      catch {
+        const sel = window.getSelection();
+        if (sel && sel.rangeCount) {
+          const r = sel.getRangeAt(0);
+          r.deleteContents();
+          const div = document.createElement("div");
+          div.innerHTML = html;
+          r.insertNode(div);
+          while (div.firstChild) r.insertNode(div.firstChild), div.removeChild(div.firstChild);
+          div.remove();
+        }
+      }
+      setTimeout(() => ensureParagraphMarkers(ed), 0);
       props.scheduleSave?.();
       props.onChange?.(ed.innerHTML);
       goal.bumpGoal();
-      if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true));
+
+      // Do not force-focus after paste. Native selection/click placement must stay in control.
     };
 
-    ed.addEventListener("paste", onPaste as any, true);
-    return () => ed.removeEventListener("paste", onPaste as any, true);
+    ed.addEventListener("paste", onPaste as any);
+    return () => ed.removeEventListener("paste", onPaste as any);
   }, [props.scheduleSave, props.onChange]);
 
   /* ---- Copy: normalize selection and export as text/plain ---- */
@@ -1718,81 +1232,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     });
     return () => ctl.destroy();
   }, [effectiveId, props.curly, props.scheduleSave]);
-
-  // WebView/contentEditable can keep the previous caret when moving from a lower paragraph
-  // back to an upper paragraph. Anchor every non-drag LMB release by its real screen
-  // point so the next paste/preset command does not reuse a stale selection.
-  // Drag selections are preserved; double-click word selection is intentionally ignored.
-  useEffect(() => {
-    const ed = edRef.current!;
-    if (!ed) return;
-
-    let down: { x: number; y: number; t: number } | null = null;
-
-    const markDirtyByKey = (e: KeyboardEvent) => {
-      if (!lastClickPointRef.current) return;
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const k = e.key || "";
-      if (
-        k.length === 1 ||
-        k === "Backspace" || k === "Delete" || k === "Enter" || k === "Tab" ||
-        k.startsWith("Arrow") || k === "Home" || k === "End" || k === "PageUp" || k === "PageDown"
-      ) {
-        lastClickPointRef.current.dirty = true;
-      }
-    };
-
-    const onMouseDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      if (!ed.contains(e.target as Node)) return;
-      down = { x: e.clientX, y: e.clientY, t: performance.now() };
-    };
-
-    const onMouseUp = (e: MouseEvent) => {
-      if (e.button !== 0 || !down) return;
-      if (!ed.contains(e.target as Node)) { down = null; return; }
-      const dx = Math.abs(e.clientX - down.x);
-      const dy = Math.abs(e.clientY - down.y);
-      const isDrag = dx > 4 || dy > 4;
-      const pt = { x: e.clientX, y: e.clientY };
-      down = null;
-      if (isDrag) return;
-
-      // v5: TextBoard deliberately does not support browser double-click word selection.
-      // Any non-drag LMB release is treated as a plain caret placement.
-      // This keeps accidental double-clicks from leaving a word selection or stale range
-      // that can corrupt the next paste/preset command.
-      const anchoredNow = placeCaretFromPointInEditor(ed, pt.x, pt.y);
-      if (anchoredNow) {
-        lastClickPointRef.current = { x: pt.x, y: pt.y, t: performance.now(), dirty: false };
-      }
-
-      // Safety pass: if WebView applies a late native selection after mouseup, repair it
-      // before the next command. Do not touch intentional selections.
-      requestAnimationFrame(() => {
-        const sel = window.getSelection?.();
-        if (!lastClickPointRef.current || lastClickPointRef.current.dirty) return;
-        if (sel && sel.rangeCount && !sel.isCollapsed) return;
-
-        const hit = document.elementFromPoint(pt.x, pt.y) as HTMLElement | null;
-        const intendedP = hit?.closest?.(PSEL) as HTMLElement | null;
-        const currentP = sel && sel.rangeCount ? closestParagraph(sel.getRangeAt(0).startContainer) : null;
-
-        if (intendedP && currentP !== intendedP) {
-          placeCaretFromPointInEditor(ed, pt.x, pt.y);
-        }
-      });
-    };
-
-    ed.addEventListener("mousedown", onMouseDown, true);
-    ed.addEventListener("mouseup", onMouseUp, true);
-    ed.addEventListener("keydown", markDirtyByKey, true);
-    return () => {
-      ed.removeEventListener("mousedown", onMouseDown, true);
-      ed.removeEventListener("mouseup", onMouseUp, true);
-      ed.removeEventListener("keydown", markDirtyByKey, true);
-    };
-  }, []);
 
   useEffect(() => {
     const ed = edRef.current!;
@@ -1896,11 +1335,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
           onAlignRight={() => align("right")}
           onAlignJustify={() => align("justify")}
           onOpenEcho={openEcho}
-          onToolbarPointerDown={() => {
-            // Intentionally no focus here. Toolbar buttons already prevent mouse down
-            // from stealing selection; forcing focus is what makes middle-paragraph
-            // preset changes collapse to the document start in WebView.
-          }}
+          onToolbarPointerDown={() => edRef.current?.focus({ preventScroll: true } as any)}
           writingGoal={
             goal.goalEnabled
               ? {
@@ -1950,8 +1385,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
                 e.stopPropagation();
                 return;
               }
-              // Left click inside contentEditable must be handled by the browser;
-              // forcing focus here can reset the native caret calculation.
+              // Left-click inside contentEditable: let the browser place the caret natively.
+              // Forcing focus here can reset the selection to the paragraph start after paste.
             }}
           />
           <div ref={spacerRef} style={{ height: 0, pointerEvents: "none" }} />

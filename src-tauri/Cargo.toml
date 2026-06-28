@@ -1,6 +1,6 @@
 [package]
 name = "splitwriter"
-version = "1.1.0-portable"
+version = "1.1.1-portable"
 description = "Minimal multi-window sample (Main_UI / Open_Image)"
 authors = ["you"]
 license = "MIT"
