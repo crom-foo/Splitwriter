@@ -1,11 +1,16 @@
 # Pack-Portable.ps1 — Splitwriter portable packer
 param(
-  [string]$Version = "0.9.0-beta.1"
+  [string]$Version = "1.2.0"
 )
 
-$Root   = Get-Location
-$OutDir = Join-Path $Root ("release\splitwriter_v{0}_portable" -f $Version)
-$Zip    = Join-Path $Root ("release\splitwriter_v{0}_portable_win64.zip" -f $Version)
+$Root = (Get-Location).Path
+$PackageVersion = if ($Version.EndsWith("-portable", [StringComparison]::OrdinalIgnoreCase)) {
+  $Version
+} else {
+  "{0}-portable" -f $Version
+}
+$OutDir = Join-Path $Root ("release\splitwriter_v{0}" -f $PackageVersion)
+$Zip    = Join-Path $Root ("release\splitwriter_v{0}_win64.zip" -f $PackageVersion)
 
 # 1) 산출물 확인
 $ExePath = Join-Path $Root "src-tauri\target\release\Splitwriter.exe"
@@ -22,17 +27,10 @@ Copy-Item $ExePath $OutDir -Force
 Get-ChildItem (Join-Path $Root "src-tauri\target\release") -Filter *.dll -ErrorAction SilentlyContinue | `
   Copy-Item -Destination $OutDir -Force
 
-# 4) runtime 폴더가 있으면 같이 포함 (오타 폴더도 케어)
-$runtA = Join-Path $OutDir  "runtime"
-$runtB = Join-Path $Root    "runtime"
-$runtTypo = Join-Path $Root "rumtime"
-if (Test-Path $runtB)      { Copy-Item $runtB -Destination $OutDir -Recurse -Force }
-elseif (Test-Path $runtTypo) { Copy-Item $runtTypo -Destination $runtA -Recurse -Force }
-
-# 5) README/CHANGELOG가 루트나 OutDir에 있으면 포함
-foreach($name in @("README_kr_en.txt","CHANGELOG.txt")) {
-  if (Test-Path (Join-Path $Root $name)) { Copy-Item (Join-Path $Root $name) $OutDir -Force }
-}
+# 4) 배포용 안내, 변경 기록, 라이선스를 포함
+Copy-Item (Join-Path $Root "README_Portable.txt") (Join-Path $OutDir "README.txt") -Force
+Copy-Item (Join-Path $Root "CHANGELOG.txt") (Join-Path $OutDir "CHANGELOG.txt") -Force
+Copy-Item (Join-Path $Root "LICENSE") (Join-Path $OutDir "LICENSE.txt") -Force
 
 # 6) ZIP으로 묶기(기존 파일 있으면 교체)
 if (Test-Path $Zip) { Remove-Item $Zip -Force }

@@ -1,0 +1,19 @@
+Splitwriter v1.2.0 Portable — Windows x64
+
+WHAT'S NEW
+- Rebuilt TextBoard paragraph editing around consistent paragraph elements.
+- Enter splits paragraphs; Backspace and Delete join adjacent paragraphs at
+  their boundaries.
+- Improved caret formatting for bold and italic, including selected text.
+- Added paragraph alignment and paragraph preset shortcuts.
+- Added 50-step per-board undo and redo history for the current session.
+- Improved Typewriter scrolling and automatic caret visibility.
+- Added Echo View start-point selection from the text board context menu.
+- PDF export now opens the Windows print window without an in-app print preview.
+- Paste is handled as plain text with paragraph breaks preserved.
+
+NOTES
+- Undo and redo history is session-only and is not restored after reopening a
+  project or restarting the app.
+- Bold and italic are inline formatting. Paragraph alignment remains a
+  paragraph-level setting.

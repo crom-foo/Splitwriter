@@ -18,7 +18,7 @@ _For all creators — past, present, and future._
 Splitwriter is a focused writing tool built to make creative work easier.  
 Instead of fighting with a heavy word processor, you just open Splitwriter and start writing.
 
-Current Version 1.1 : **v1.1.1-Portable (Windows x64)**
+Current Version: **v1.2.0-portable (Windows x64)**
 
 UI language: **English**  
 Typing input (IME/keyboard): **Auto (System)** + manual options (e.g. English, 한국어, 日本語, 中文, Русский, …)
@@ -100,7 +100,7 @@ If you want a small notebook-like tool for novels, scripts, or journals, Splitwr
   A small heads-up display that shows your current progress toward a writing goal.
 
 - **Undo / Redo**  
-  Per-board history for both text and image edits (up to 20 steps, including selection restore).
+  Per-board history for both text and image edits (up to 50 steps, including selection restore).
 
 ---
 

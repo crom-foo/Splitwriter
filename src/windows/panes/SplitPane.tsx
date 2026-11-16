@@ -187,7 +187,7 @@ export default function SplitPane({
   };
 
   /* ───── 드래그 히트박스(가터 중앙에 정렬) ───── */
-  const HIT = Math.max(16, gutterSize + 12);
+  const HIT = 10;
   const hitStyle: React.CSSProperties = isVert
     ? {
         position: "absolute",

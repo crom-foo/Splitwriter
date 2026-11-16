@@ -62,6 +62,11 @@ type Props = {
 };
 
 const PSEL = "[data-sw-paragraph]";
+const HISTORY_BOUNDARY_EVENT = "sw:history:boundary";
+
+function markHistoryBoundary(ed: HTMLElement) {
+  ed.dispatchEvent(new Event(HISTORY_BOUNDARY_EVENT));
+}
 
 /* ---------- Preset helpers ---------- */
 const getPresetOf = (el: HTMLElement | null): Preset => {
@@ -163,7 +168,7 @@ function selectionRangeIn(ed: HTMLElement): Range | null {
   const sel = window.getSelection();
   if (!sel || sel.rangeCount === 0) return null;
   const r = sel.getRangeAt(0);
-  return ed.contains(r.startContainer) ? r : null;
+  return ed.contains(r.startContainer) && ed.contains(r.endContainer) ? r : null;
 }
 function isEventInsideEditor(ed: HTMLElement): boolean {
   const active = document.activeElement;
@@ -171,25 +176,41 @@ function isEventInsideEditor(ed: HTMLElement): boolean {
 }
 function paragraphsInSelection(ed: HTMLElement): HTMLElement[] {
   const r = selectionRangeIn(ed);
-  const paras = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
+  const paras = Array.from(ed.children).filter(
+    (node): node is HTMLElement => node instanceof HTMLElement && node.matches(PSEL)
+  );
   if (!paras.length) return [];
-  if (!r) return [paras[0]];
+  if (!r) return [];
   if (r.collapsed) {
     const base = (r.startContainer.nodeType === 1
       ? (r.startContainer as HTMLElement)
       : (r.startContainer.parentElement as HTMLElement));
     const p = base?.closest(PSEL) as HTMLElement | null;
-    return p ? [p] : [paras[0]];
+    return p && p.parentElement === ed ? [p] : [];
   }
+
+  // A non-collapsed selection applies to every paragraph between its two
+  // endpoints. This also handles mixed presets by replacing each paragraph's
+  // preset class with the one chosen by the user.
+  const startP = closestParagraph(r.startContainer);
+  const endP = closestParagraph(r.endContainer);
+  const startIndex = startP?.parentElement === ed ? paras.indexOf(startP) : -1;
+  const endIndex = endP?.parentElement === ed ? paras.indexOf(endP) : -1;
+  if (startIndex >= 0 && endIndex >= 0) {
+    return paras.slice(Math.min(startIndex, endIndex), Math.max(startIndex, endIndex) + 1);
+  }
+
+  // Fallback for selections whose boundary is on the editor element itself.
   const out: HTMLElement[] = [];
   for (const p of paras) {
-    const pr = document.createRange();
-    pr.selectNodeContents(p);
-    const endsBeforeStart = pr.compareBoundaryPoints(Range.END_TO_START, r) <= 0;
-    const startsAfterEnd  = pr.compareBoundaryPoints(Range.START_TO_END,  r) >= 0;
-    if (!(endsBeforeStart || startsAfterEnd)) out.push(p);
+    try {
+      if (r.intersectsNode(p)) out.push(p);
+    } catch {
+      // Ignore malformed ranges; no paragraph should be changed without a
+      // reliable intersection result.
+    }
   }
-  return out.length ? out : [paras[0]];
+  return out;
 }
 
 function applyPresetToParagraph(p: HTMLElement, preset: Preset) {
@@ -204,6 +225,304 @@ function applyPresetToParagraph(p: HTMLElement, preset: Preset) {
     st.removeProperty("font-size");
     st.removeProperty("line-height");
     st.removeProperty("font-family");
+  }
+}
+
+type InlineFormat = "bold" | "italic";
+
+function selectedTextNodes(ed: HTMLElement, range: Range): Text[] {
+  const nodes: Text[] = [];
+  const selectedStart = textOffsetAt(ed, range.startContainer, range.startOffset);
+  const selectedEnd = textOffsetAt(ed, range.endContainer, range.endOffset);
+  const walker = document.createTreeWalker(ed, NodeFilter.SHOW_TEXT);
+  let position = 0;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    const end = position + node.data.length;
+    if (node.data.length && selectedStart < end && selectedEnd > position) nodes.push(node);
+    position = end;
+  }
+  return nodes;
+}
+
+function isInlineFormatActive(node: Text | HTMLElement, format: InlineFormat): boolean {
+  const el = node.nodeType === Node.ELEMENT_NODE ? node as HTMLElement : node.parentElement;
+  if (!el) return false;
+  const style = getComputedStyle(el);
+  if (format === "italic") return style.fontStyle === "italic" || style.fontStyle === "oblique";
+  const weight = Number.parseInt(style.fontWeight, 10);
+  return style.fontWeight === "bold" || (Number.isFinite(weight) && weight >= 600);
+}
+
+type InlineStyleState = { bold: boolean; italic: boolean };
+
+function stateFromInlineElement(el: HTMLElement, inherited: InlineStyleState): InlineStyleState {
+  const state = { ...inherited };
+  const tag = el.tagName.toLowerCase();
+  if (tag === "b" || tag === "strong") state.bold = true;
+  if (tag === "i" || tag === "em") state.italic = true;
+  const weight = el.style.fontWeight.toLowerCase();
+  if (weight) {
+    const numericWeight = Number.parseInt(weight, 10);
+    state.bold = weight === "bold" || (Number.isFinite(numericWeight) && numericWeight >= 600);
+  }
+  const fontStyle = el.style.fontStyle.toLowerCase();
+  if (fontStyle) state.italic = fontStyle === "italic" || fontStyle === "oblique";
+  return state;
+}
+
+function rewriteParagraphInlineFormat(
+  paragraph: HTMLElement,
+  selectedStart: number,
+  selectedEnd: number,
+  format: InlineFormat,
+  enabled: boolean,
+  forcedState?: InlineStyleState,
+): void {
+  const output = document.createDocumentFragment();
+  const inherited = {
+    bold: isInlineFormatActive(paragraph, "bold"),
+    italic: isInlineFormatActive(paragraph, "italic"),
+  };
+  let textPosition = 0;
+
+  const appendText = (target: Node, value: string, state: InlineStyleState, isSelected: boolean) => {
+    if (!value) return;
+    const next = !isSelected
+      ? state
+      : forcedState ?? { ...state, [format]: enabled } as InlineStyleState;
+    if (!next.bold && !next.italic) target.appendChild(document.createTextNode(value));
+    else {
+      const span = document.createElement("span");
+      if (next.bold) span.style.fontWeight = "bold";
+      if (next.italic) span.style.fontStyle = "italic";
+      span.textContent = value;
+      target.appendChild(span);
+    }
+  };
+
+  const walk = (node: Node, target: Node, state: InlineStyleState) => {
+    if (node.nodeType === Node.TEXT_NODE) {
+      const value = node.nodeValue || "";
+      const from = textPosition;
+      const to = from + value.length;
+      const cuts = [0, value.length];
+      if (selectedStart > from && selectedStart < to) cuts.push(selectedStart - from);
+      if (selectedEnd > from && selectedEnd < to) cuts.push(selectedEnd - from);
+      cuts.sort((a, b) => a - b);
+      for (let i = 0; i < cuts.length - 1; i++) {
+        const a = cuts[i];
+        const b = cuts[i + 1];
+        const segmentStart = from + a;
+        const segmentEnd = from + b;
+        const selected = segmentStart < selectedEnd && segmentEnd > selectedStart;
+        appendText(target, value.slice(a, b), state, selected);
+      }
+      textPosition = to;
+      return;
+    }
+    if (node.nodeType !== Node.ELEMENT_NODE) return;
+    const el = node as HTMLElement;
+    if (el.tagName === "BR") {
+      target.appendChild(el.cloneNode(false));
+      return;
+    }
+    const next = stateFromInlineElement(el, state);
+    const tag = el.tagName.toLowerCase();
+    const shell = el.cloneNode(false) as HTMLElement;
+    if (tag === "b" || tag === "strong" || tag === "i" || tag === "em") {
+      const semantic = document.createElement("span");
+      for (const attr of Array.from(shell.attributes)) semantic.setAttribute(attr.name, attr.value);
+      semantic.style.removeProperty("font-weight");
+      semantic.style.removeProperty("font-style");
+      if (!semantic.style.cssText) semantic.removeAttribute("style");
+      const redundant = semantic.attributes.length === 0;
+      const childTarget = redundant ? target : semantic;
+      if (!redundant) target.appendChild(semantic);
+      Array.from(el.childNodes).forEach((child) => walk(child, childTarget, next));
+      return;
+    }
+    shell.style.removeProperty("font-weight");
+    shell.style.removeProperty("font-style");
+    if (!shell.style.cssText) shell.removeAttribute("style");
+    const redundantSpan = shell instanceof HTMLElement &&
+      shell.tagName === "SPAN" && shell.attributes.length === 0;
+    const childTarget = redundantSpan ? target : shell;
+    if (!redundantSpan) target.appendChild(shell);
+    Array.from(el.childNodes).forEach((child) => walk(child, childTarget, next));
+  };
+
+  Array.from(paragraph.childNodes).forEach((node) => walk(node, output, inherited));
+  paragraph.replaceChildren(output);
+}
+
+function applyInlineStateToTextRange(ed: HTMLElement, start: number, end: number, state: InlineStyleState) {
+  if (end <= start) return;
+  let position = 0;
+  const paragraphs = Array.from(ed.children).filter(
+    (node): node is HTMLElement => node instanceof HTMLElement && node.matches(PSEL),
+  );
+  for (const paragraph of paragraphs) {
+    const length = paragraph.textContent?.length || 0;
+    const localStart = Math.max(0, start - position);
+    const localEnd = Math.min(length, end - position);
+    if (localStart < localEnd) {
+      rewriteParagraphInlineFormat(paragraph, localStart, localEnd, "bold", state.bold, state);
+    }
+    position += length;
+  }
+}
+
+function textRangeHasInlineState(
+  ed: HTMLElement,
+  start: number,
+  end: number,
+  expected: InlineStyleState,
+): boolean {
+  if (end <= start) return true;
+  const from = textPointAt(ed, start, "start");
+  const to = textPointAt(ed, end, "end");
+  if (!from || !to) return false;
+  const range = document.createRange();
+  range.setStart(from.node, from.offset);
+  range.setEnd(to.node, to.offset);
+  const nodes = selectedTextNodes(ed, range);
+  return nodes.length > 0 && nodes.every((node) =>
+    isInlineFormatActive(node, "bold") === expected.bold &&
+    isInlineFormatActive(node, "italic") === expected.italic
+  );
+}
+
+function paragraphPartOfRange(range: Range, p: HTMLElement): Range | null {
+  const whole = document.createRange();
+  whole.selectNodeContents(p);
+  const part = document.createRange();
+  if (range.compareBoundaryPoints(Range.START_TO_START, whole) <= 0) {
+    part.setStart(whole.startContainer, whole.startOffset);
+  } else {
+    part.setStart(range.startContainer, range.startOffset);
+  }
+  if (range.compareBoundaryPoints(Range.END_TO_END, whole) >= 0) {
+    part.setEnd(whole.endContainer, whole.endOffset);
+  } else {
+    part.setEnd(range.endContainer, range.endOffset);
+  }
+  return part.collapsed ? null : part;
+}
+
+function textOffsetAt(root: HTMLElement, node: Node, offset: number): number {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let position = 0;
+  while (walker.nextNode()) {
+    const text = walker.currentNode as Text;
+    if (text === node) return position + Math.max(0, Math.min(offset, text.data.length));
+    const textEnd = document.createRange();
+    textEnd.setStart(text, text.data.length);
+    textEnd.collapse(true);
+    const boundary = document.createRange();
+    boundary.setStart(node, offset);
+    boundary.collapse(true);
+    if (textEnd.compareBoundaryPoints(Range.START_TO_START, boundary) <= 0) {
+      position += text.data.length;
+    } else {
+      break;
+    }
+  }
+  return position;
+}
+
+function textPointAt(
+  root: HTMLElement,
+  target: number,
+  bias: "start" | "end" = "start",
+): { node: Text; offset: number } | null {
+  const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+  let position = 0;
+  let last: Text | null = null;
+  while (walker.nextNode()) {
+    const node = walker.currentNode as Text;
+    last = node;
+    const end = position + node.data.length;
+    if (target < end || (target === end && bias === "end")) {
+      return { node, offset: Math.max(0, target - position) };
+    }
+    position = end;
+  }
+  return last ? { node: last, offset: last.data.length } : null;
+}
+
+function applyInlineFormatToSelection(ed: HTMLElement, format: InlineFormat, enabled: boolean): boolean {
+  const selection = window.getSelection?.();
+  const original = selectionRangeIn(ed);
+  if (!selection || !original || original.collapsed || !original.toString().length) return false;
+  const startTextOffset = textOffsetAt(ed, original.startContainer, original.startOffset);
+  const endTextOffset = textOffsetAt(ed, original.endContainer, original.endOffset);
+  const backward = selection.anchorNode !== original.startContainer ||
+    selection.anchorOffset !== original.startOffset;
+  const paragraphs = paragraphsInSelection(ed);
+  const parts = paragraphs
+    .map((paragraph) => ({ paragraph, part: paragraphPartOfRange(original, paragraph) }))
+    .filter((entry): entry is { paragraph: HTMLElement; part: Range } => !!entry.part)
+    .reverse();
+
+  for (const { paragraph, part } of parts) {
+    const start = textOffsetAt(paragraph, part.startContainer, part.startOffset);
+    const end = textOffsetAt(paragraph, part.endContainer, part.endOffset);
+    rewriteParagraphInlineFormat(paragraph, start, end, format, enabled);
+  }
+
+  const startPoint = textPointAt(ed, startTextOffset, "start");
+  const endPoint = textPointAt(ed, endTextOffset, "end");
+  if (startPoint && endPoint) {
+    selection.removeAllRanges();
+    if (backward) {
+      selection.collapse(endPoint.node, endPoint.offset);
+      selection.extend(startPoint.node, startPoint.offset);
+    } else {
+      const restored = document.createRange();
+      restored.setStart(startPoint.node, startPoint.offset);
+      restored.setEnd(endPoint.node, endPoint.offset);
+      selection.addRange(restored);
+    }
+  }
+  return true;
+}
+
+function normalizeNativeEmphasisAtCaret(ed: HTMLElement) {
+  const selection = window.getSelection?.();
+  const current = selection?.rangeCount ? selection.getRangeAt(0) : null;
+  const p = current ? closestParagraph(current.startContainer) : null;
+  if (!p) return;
+  const legacy = Array.from(p.querySelectorAll<HTMLElement>("b,strong,i,em"));
+  if (!legacy.length) return;
+
+  // Replacing a browser-created <b>/<i> ancestor can invalidate the WebView's
+  // live caret and make the first typed character jump to the paragraph end.
+  // A temporary marker stays at the exact insertion point while wrappers are
+  // converted to spans.
+  const caretMarker = current?.collapsed ? document.createComment("sw-format-caret") : null;
+  if (caretMarker && current && p.contains(current.startContainer)) {
+    try { current.insertNode(caretMarker); } catch {}
+  }
+
+  for (const el of legacy.reverse()) {
+    const span = document.createElement("span");
+    for (const attr of Array.from(el.attributes)) span.setAttribute(attr.name, attr.value);
+    if (el.tagName === "B" || el.tagName === "STRONG") span.style.fontWeight = "bold";
+    else span.style.fontStyle = "italic";
+    while (el.firstChild) span.appendChild(el.firstChild);
+    el.replaceWith(span);
+  }
+
+  if (caretMarker?.parentNode && selection) {
+    try {
+      const restored = document.createRange();
+      restored.setStartBefore(caretMarker);
+      restored.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(restored);
+    } catch {}
+    caretMarker.remove();
   }
 }
 
@@ -257,6 +576,7 @@ function insertEllipsisAtSelection(root: HTMLElement, schedule?: () => void, onC
   const sel = window.getSelection?.();
   if (!sel || !sel.rangeCount) return;
   const r = sel.getRangeAt(0);
+  markHistoryBoundary(root);
 
   try {
     if (document.queryCommandSupported?.("insertText")) {
@@ -280,6 +600,7 @@ function insertEllipsisAtSelection(root: HTMLElement, schedule?: () => void, onC
     sel.addRange(r);
   }
 
+  root.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromCustom" }));
   schedule?.();
   onChange?.(root.innerHTML);
   onNudge?.(); // If typewriter is ON, adjust scroll position
@@ -294,6 +615,7 @@ function insertRawTextAtSelection(root: HTMLElement, text: string, schedule?: ()
   if (!sel || !sel.rangeCount) return;
   const r = sel.getRangeAt(0);
   if (!root.contains(r.commonAncestorContainer)) return;
+  markHistoryBoundary(root);
 
   let done = false;
   try {
@@ -315,6 +637,7 @@ function insertRawTextAtSelection(root: HTMLElement, text: string, schedule?: ()
   }
 
   ensureParagraphMarkersNearCaret(root);
+  root.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromCustom" }));
   schedule?.();
   onChange?.(root.innerHTML);
   onNudge?.();
@@ -331,12 +654,13 @@ function textOffsetBeforeNode(root: HTMLElement, node: Node): number {
   }
 }
 
-function removeLeadingTabFromParagraph(p: HTMLElement): boolean {
+function removeLeadingTabFromParagraph(p: HTMLElement, beforeRemove?: () => void): boolean {
   const walker = document.createTreeWalker(p, NodeFilter.SHOW_TEXT);
   while (walker.nextNode()) {
     const t = walker.currentNode as Text;
     if (!t.data.length) continue;
     if (t.data.startsWith(TAB_STR)) {
+      beforeRemove?.();
       t.deleteData(0, TAB_STR.length);
       return true;
     }
@@ -943,6 +1267,52 @@ function insertParagraphBreakStrict(ed: HTMLElement): boolean {
   return true;
 }
 
+/** Join adjacent root paragraphs without rebuilding the editor or restoring a
+ * document-wide text offset. The temporary comment gives the caret a stable
+ * DOM position at the join, including when either paragraph is empty. */
+function joinParagraphAtBoundary(p: HTMLElement, direction: "backward" | "forward"): boolean {
+  const ed = p.parentElement;
+  if (!ed) return false;
+  const other = (direction === "backward" ? p.previousElementSibling : p.nextElementSibling) as HTMLElement | null;
+  if (!other || !other.matches(PSEL)) return false;
+
+  const left = direction === "backward" ? other : p;
+  const right = direction === "backward" ? p : other;
+  removePlaceholderBR(left);
+  removePlaceholderBR(right);
+
+  const marker = document.createComment("sw-caret");
+  left.appendChild(marker);
+  while (right.firstChild) left.appendChild(right.firstChild);
+  right.remove();
+  if (!strictHasMeaningfulContent(left)) left.appendChild(document.createElement("br"));
+
+  const sel = window.getSelection?.();
+  if (sel) {
+    const range = document.createRange();
+    range.setStartBefore(marker);
+    range.collapse(true);
+    marker.parentNode?.removeChild(marker);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  } else {
+    marker.remove();
+  }
+  return true;
+}
+
+function caretAtParagraphBoundary(p: HTMLElement, range: Range, edge: "start" | "end"): boolean {
+  if (!range.collapsed) return false;
+  const probe = document.createRange();
+  probe.selectNodeContents(p);
+  if (edge === "start") {
+    probe.setEnd(range.startContainer, range.startOffset);
+    return probe.toString().length === 0;
+  }
+  probe.setStart(range.startContainer, range.startOffset);
+  return probe.toString().length === 0;
+}
+
 export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref) {
   const edRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -951,13 +1321,35 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const lastSelRef = useRef<{ start: number; end: number } | null>(null);
   const lastClickPointRef = useRef<{ x: number; y: number; t: number; dirty: boolean } | null>(null);
   const goal = useWritingGoal(edRef as React.RefObject<HTMLElement>, props.writingGoal);
+  const onChangeRef = useRef(props.onChange);
+  const bumpGoalRef = useRef(goal.bumpGoal);
+  const curlySettingRef = useRef({ enabled: false, map: { left: "{", right: "}" } });
+  onChangeRef.current = props.onChange;
+  bumpGoalRef.current = goal.bumpGoal;
+  const curlyConfig = normalizeCurly(props.curly);
+  curlySettingRef.current = curlyConfig && (curlyConfig as any).enabled
+    ? { enabled: true, map: { left: (curlyConfig as any).left, right: (curlyConfig as any).right } }
+    : { enabled: false, map: { left: "{", right: "}" } };
   const [echoOpen, setEchoOpen] = React.useState(false);
   const [echoText, setEchoText] = React.useState("");
   const [echoStartAt, setEchoStartAt] = React.useState(0);
   const [echoBgSources, setEchoBgSources] = React.useState<string[] | undefined>(undefined);
+  const echoStartTextOffsetRef = useRef<number | null>(null);
+  const rightClickTextOffsetRef = useRef<number | null>(null);
   const enterSnapGuardUntil = React.useRef(0);
 
   const effectiveId = props.id ?? "";
+
+  useEffect(() => {
+    const onSetEchoStart = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string }>).detail;
+      if (detail?.id === effectiveId && rightClickTextOffsetRef.current != null) {
+        echoStartTextOffsetRef.current = rightClickTextOffsetRef.current;
+      }
+    };
+    window.addEventListener("sw:echo:set-start", onSetEchoStart);
+    return () => window.removeEventListener("sw:echo:set-start", onSetEchoStart);
+  }, [effectiveId]);
 
   const getPlainText = () => {
     const ed = edRef.current!;
@@ -969,14 +1361,53 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const [typingMode, setTypingMode] = React.useState<{ bold: boolean; italic: boolean }>({
     bold: false, italic: false,
   });
+  const typingModeRef = useRef<InlineStyleState>({ bold: false, italic: false });
+  const caretFormatOverrideRef = useRef<{ textOffset: number; state: InlineStyleState } | null>(null);
+  const pendingInputFormatRef = useRef<{ start: number; state: InlineStyleState } | null>(null);
+  const compositionFormatRef = useRef<{ start: number; state: InlineStyleState } | null>(null);
   const refreshTyping = () => {
     try {
-      setTypingMode({
-        bold: !!document.queryCommandState?.("bold"),
-        italic: !!document.queryCommandState?.("italic"),
-      });
+      const ed = edRef.current;
+      const range = ed ? selectionRangeIn(ed) : null;
+      if (range && !range.collapsed) {
+        caretFormatOverrideRef.current = null;
+        const nodes = selectedTextNodes(ed!, range);
+        const next = {
+          bold: nodes.length > 0 && nodes.every((node) => isInlineFormatActive(node, "bold")),
+          italic: nodes.length > 0 && nodes.every((node) => isInlineFormatActive(node, "italic")),
+        };
+        typingModeRef.current = next;
+        setTypingMode(next);
+      } else {
+        const override = caretFormatOverrideRef.current;
+        if (range?.collapsed && ed && override &&
+          override.textOffset === textOffsetAt(ed, range.startContainer, range.startOffset)) {
+          typingModeRef.current = override.state;
+          setTypingMode(override.state);
+          return;
+        }
+        caretFormatOverrideRef.current = null;
+        const node = range?.startContainer as Text | HTMLElement | undefined;
+        const next = {
+          bold: !!node && isInlineFormatActive(node, "bold"),
+          italic: !!node && isInlineFormatActive(node, "italic"),
+        };
+        typingModeRef.current = next;
+        setTypingMode(next);
+      }
     } catch {}
   };
+
+  useEffect(() => {
+    const ed = edRef.current;
+    if (!ed) return;
+    const onSelectionChange = () => {
+      if (!selectionRangeIn(ed)) return;
+      requestAnimationFrame(() => refreshTyping());
+    };
+    document.addEventListener("selectionchange", onSelectionChange);
+    return () => document.removeEventListener("selectionchange", onSelectionChange);
+  }, []);
 
   const toolbarH = Number.isFinite(TOOLBAR_H as any) ? (TOOLBAR_H as number) : 28;
   const S = getStyles({
@@ -1063,7 +1494,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   }, []);
 
   const TW_TARGET = 0.58;
-  const TW_DEAD   = 24;
+  const TW_RANGE_TOP = 0.56;
+  const TW_RANGE_BOTTOM = 0.60;
 
   function refreshTypewriterSpacer() {
     const scroller = scrollerRef.current;
@@ -1213,16 +1645,38 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     }
     if (caretY == null) return;
 
-    const target = scroller.clientHeight * TW_TARGET;
-    const delta  = caretY - target;
+    const height = scroller.clientHeight;
+    const rangeTop = height * TW_RANGE_TOP;
+    const rangeBottom = height * TW_RANGE_BOTTOM;
+    if (caretY >= rangeTop && caretY <= rangeBottom) return;
 
-    if (!force && Math.abs(delta) <= TW_DEAD) return;
+    // Keep the 58% position as the recovery point, but leave the caret free
+    // inside a wider band so small per-keystroke changes do not scroll.
+    const target = height * TW_TARGET;
+    const delta = caretY - target;
 
     const maxScroll = scroller.scrollHeight - scroller.clientHeight;
     let next = scroller.scrollTop + delta;
     if (next < 0) next = 0;
     if (next > maxScroll) next = maxScroll;
     scroller.scrollTop = next;
+  }
+
+  function keepCaretAboveBottomEdge() {
+    if (twOn) return;
+    const scroller = scrollerRef.current;
+    const sel = window.getSelection?.();
+    if (!scroller || !sel || !sel.rangeCount) return;
+
+    const rect = getCaretRectFromSelection(sel);
+    if (!rect) return;
+    const view = scroller.getBoundingClientRect();
+    const margin = Math.min(28, Math.max(16, scroller.clientHeight * 0.035));
+    const overflow = rect.bottom - (view.bottom - margin);
+    if (overflow <= 0) return;
+
+    const max = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+    scroller.scrollTop = Math.min(max, scroller.scrollTop + overflow);
   }
 
   // Apply pending preset once after a valid selection exists
@@ -1246,27 +1700,23 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const paras = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
 
       let startAt = 0;
-
-      if (sel && sel.rangeCount) {
+      let textOffset = echoStartTextOffsetRef.current;
+      if (textOffset == null && sel?.rangeCount) {
         const r = sel.getRangeAt(0);
-        const curP = closestParagraph(r.startContainer);
-
-        if (curP) {
-          // 1) 현재 문단 앞에 있는 문단들의 문장 수 누적
-          for (const p of paras) {
-            if (p === curP) break;
-            startAt += tokenCountOfParagraphText(p.textContent || "");
+        if (ed.contains(r.startContainer)) {
+          textOffset = textOffsetAt(ed, r.startContainer, r.startOffset);
+        }
+      }
+      if (textOffset != null) {
+        let consumed = 0;
+        for (const p of paras) {
+          const text = p.textContent || "";
+          if (textOffset <= consumed + text.length) {
+            startAt += countEndedBefore(text, Math.max(0, textOffset - consumed));
+            break;
           }
-
-          // 2) 현재 문단 안에서 캐럿 앞까지의 글자 수 → 그 안에서 끝난 문장 수
-          let off = 0;
-          try {
-            const pref = r.cloneRange();
-            pref.setStart(curP, 0);
-            const frag = pref.cloneContents();
-            off = (frag.textContent || "").length;
-          } catch {}
-          startAt += countEndedBefore(curP.textContent || "", off);
+          startAt += tokenCountOfParagraphText(text);
+          consumed += text.length;
         }
       }
 
@@ -1322,29 +1772,139 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   /* Input events */
   useEffect(() => {
     const ed = edRef.current!;
-    const onInput = () => {
+    const onCompStart = () => {
+      pendingInputFormatRef.current = null;
+      const range = selectionRangeIn(ed);
+      if (!range) {
+        compositionFormatRef.current = null;
+        return;
+      }
+      compositionFormatRef.current = {
+        start: textOffsetAt(ed, range.startContainer, range.startOffset),
+        state: { ...typingModeRef.current },
+      };
+    };
+    const onBeforeInput = (event: InputEvent) => {
+      if (
+        event.isComposing || compositionFormatRef.current ||
+        !/^insert(Text|ReplacementText)$/.test(event.inputType || "")
+      ) {
+        pendingInputFormatRef.current = null;
+        return;
+      }
+      const range = selectionRangeIn(ed);
+      if (!range) {
+        pendingInputFormatRef.current = null;
+        return;
+      }
+      const override = caretFormatOverrideRef.current;
+      const rangeStart = textOffsetAt(ed, range.startContainer, range.startOffset);
+      const state = override && range.collapsed && override.textOffset === rangeStart
+        ? override.state
+        : typingModeRef.current;
+      pendingInputFormatRef.current = { start: rangeStart, state: { ...state } };
+    };
+    const onInput = (event: InputEvent) => {
       if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
-      if (editorNeedsStrictParagraphNormalize(ed)) normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
-      else ensureParagraphMarkersNearCaret(ed);
+      if (!event.isComposing && /^insert(Text|ReplacementText)$/.test(event.inputType || "")) {
+        normalizeNativeEmphasisAtCaret(ed);
+      }
+      const pending = pendingInputFormatRef.current;
+      pendingInputFormatRef.current = null;
+      let corrected = false;
+      if (
+        pending && !event.isComposing && !compositionFormatRef.current &&
+        /^insert(Text|ReplacementText)$/.test(event.inputType || "")
+      ) {
+        const range = selectionRangeIn(ed);
+        if (range?.collapsed) {
+          const end = textOffsetAt(ed, range.startContainer, range.startOffset);
+          if (end > pending.start && !textRangeHasInlineState(ed, pending.start, end, pending.state)) {
+            applyInlineStateToTextRange(ed, pending.start, end, pending.state);
+            const caret = textPointAt(ed, end, "end");
+            if (caret) {
+              const restored = document.createRange();
+              restored.setStart(caret.node, caret.offset);
+              restored.collapse(true);
+              const selection = window.getSelection?.();
+              selection?.removeAllRanges();
+              selection?.addRange(restored);
+            }
+            corrected = true;
+          }
+          const active = window.getSelection?.();
+          if (active?.rangeCount && active.isCollapsed) {
+            const caretRange = active.getRangeAt(0);
+            caretFormatOverrideRef.current = {
+              textOffset: textOffsetAt(ed, caretRange.startContainer, caretRange.startOffset),
+              state: pending.state,
+            };
+          }
+          typingModeRef.current = pending.state;
+          setTypingMode(pending.state);
+        }
+      }
+      props.onChange?.(ed.innerHTML);
+      if (corrected) props.scheduleSave?.();
+      goal.bumpGoal();
+      requestAnimationFrame(() => refreshTyping());
+    };
+    const onCompEnd = () => {
+      normalizeNativeEmphasisAtCaret(ed);
+      const composing = compositionFormatRef.current;
+      compositionFormatRef.current = null;
+      pendingInputFormatRef.current = null;
+      const selection = window.getSelection?.();
+      const range = selectionRangeIn(ed);
+      if (composing && range?.collapsed) {
+        const end = textOffsetAt(ed, range.startContainer, range.startOffset);
+        if (end > composing.start) {
+          applyInlineStateToTextRange(ed, composing.start, end, composing.state);
+          const caret = textPointAt(ed, end, "end");
+          if (caret && selection) {
+            const restored = document.createRange();
+            restored.setStart(caret.node, caret.offset);
+            restored.collapse(true);
+            selection.removeAllRanges();
+            selection.addRange(restored);
+            caretFormatOverrideRef.current = { textOffset: end, state: composing.state };
+          }
+          typingModeRef.current = composing.state;
+          setTypingMode(composing.state);
+        }
+      }
+      props.onChange?.(ed.innerHTML);
+      props.scheduleSave?.();
+      goal.bumpGoal();
+      requestAnimationFrame(() => refreshTyping());
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      const text = e.dataTransfer?.getData("text/plain") ?? "";
+      if (!text) return;
+      restoreRecentClickCaretIfSafe();
+      markHistoryBoundary(ed);
+      insertPlainTextStrict(ed, text);
+      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
+      ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "insertFromDrop" }));
+      props.scheduleSave?.();
       props.onChange?.(ed.innerHTML);
       goal.bumpGoal();
     };
-    const onCompEnd = () => props.onChange?.(ed.innerHTML);
-    const onDrop = () => setTimeout(() => {
-      normalizeEditorParagraphsStrict(ed, { preserveSelection: true });
-      props.onChange?.(ed.innerHTML);
-      goal.bumpGoal();
-    }, 0);
 
+    ed.addEventListener("beforeinput", onBeforeInput, true);
     ed.addEventListener("input", onInput, true);
+    ed.addEventListener("compositionstart", onCompStart, true);
     ed.addEventListener("compositionend", onCompEnd, true);
     ed.addEventListener("drop", onDrop, true);
     return () => {
+      ed.removeEventListener("beforeinput", onBeforeInput, true);
       ed.removeEventListener("input", onInput, true);
+      ed.removeEventListener("compositionstart", onCompStart, true);
       ed.removeEventListener("compositionend", onCompEnd, true);
       ed.removeEventListener("drop", onDrop, true);
     };
-  }, [props.onChange]);
+  }, [props.onChange, props.scheduleSave]);
 
   // Strict paragraph model: Enter creates exactly one root-level paragraph.
   useEffect(() => {
@@ -1352,16 +1912,54 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     if (!ed) return;
 
     const onBeforeInput = (e: InputEvent) => {
+      if ((e as any).isComposing) return;
       const inputType = (e as any).inputType;
-      if (inputType !== "insertParagraph") return;
-      e.preventDefault();
-      e.stopPropagation();
+      if (inputType === "insertParagraph") {
+        e.preventDefault();
+        e.stopPropagation();
+        const range = selectionRangeIn(ed);
+        if (!range || !closestParagraph(range.startContainer)) return;
+        markHistoryBoundary(ed);
+        if (!insertParagraphBreakStrict(ed)) return;
+        // Typing emphasis is local to the current paragraph. Keep a false
+        // override at the new caret so browser command state cannot leak the
+        // previous paragraph's bold/italic mode across the split.
+        const newRange = selectionRangeIn(ed);
+        if (newRange?.collapsed) {
+          const plain: InlineStyleState = { bold: false, italic: false };
+          const offset = textOffsetAt(ed, newRange.startContainer, newRange.startOffset);
+          caretFormatOverrideRef.current = { textOffset: offset, state: plain };
+          typingModeRef.current = plain;
+          setTypingMode(plain);
+          emitHud(plain);
+        }
+      } else if (inputType === "deleteContentBackward" || inputType === "deleteContentForward") {
+        const range = selectionRangeIn(ed);
+        const p = range ? closestParagraph(range.startContainer) : null;
+        if (!range || !p) return;
+        const edge = inputType === "deleteContentBackward" ? "start" : "end";
+        if (!caretAtParagraphBoundary(p, range, edge)) return;
+        e.preventDefault();
+        e.stopPropagation();
+        const adjacent = inputType === "deleteContentBackward" ? p.previousElementSibling : p.nextElementSibling;
+        if (!adjacent?.matches(PSEL)) return;
+        markHistoryBoundary(ed);
+        if (!joinParagraphAtBoundary(p, inputType === "deleteContentBackward" ? "backward" : "forward")) return;
+        ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType }));
+      } else {
+        return;
+      }
       if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
-      if (!insertParagraphBreakStrict(ed)) return;
       props.scheduleSave?.();
       props.onChange?.(ed.innerHTML);
       goal.bumpGoal();
-      if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true));
+      if (twRef.current) {
+        requestAnimationFrame(() => nudgeTypewriter(true));
+      } else if (inputType === "insertParagraph") {
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (!twRef.current) keepCaretAboveBottomEdge();
+        }));
+      }
     };
 
     ed.addEventListener("beforeinput", onBeforeInput as any, true);
@@ -1444,6 +2042,31 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     };
   }, [twOn]);
 
+  // With Typewriter off, only follow the caret when it approaches the bottom
+  // edge. This leaves the normal reading position alone until the active line
+  // would otherwise disappear below the editor viewport.
+  useEffect(() => {
+    const ed = edRef.current;
+    if (!ed || twOn) return;
+
+    let frame = 0;
+    const schedule = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        keepCaretAboveBottomEdge();
+      });
+    };
+
+    ed.addEventListener("input", schedule, true);
+    ed.addEventListener("compositionend", schedule, true);
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      ed.removeEventListener("input", schedule, true);
+      ed.removeEventListener("compositionend", schedule, true);
+    };
+  }, [twOn]);
+
   const focus = () => edRef.current?.focus({ preventScroll: true } as any);
 
   // MainUI가 Ref로 직접 제어할 수 있게
@@ -1473,10 +2096,14 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const doApplyPreset = (preset: Preset) => {
     const ed = edRef.current!;
     const targets = paragraphsInSelection(ed);
+    if (!targets.length) return false;
+    markHistoryBoundary(ed);
     targets.forEach((p) => applyPresetToParagraph(p, preset));
+    ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatPreset" }));
     emitHud({ preset });
     props.scheduleSave?.();
     props.onChange?.(ed.innerHTML);
+    return true;
   };
 
   const applyPreset = (preset: Preset) => {
@@ -1498,13 +2125,77 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     const ed = edRef.current!;
     restoreRecentClickCaretIfSafe();
     const targets = paragraphsInSelection(ed);
+    if (!targets.length) return;
+    markHistoryBoundary(ed);
     targets.forEach((p) => (p.style.textAlign = kind === "justify" ? "justify" : kind));
+    ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatAlign" }));
     props.scheduleSave?.();
     props.onChange?.(ed.innerHTML);
   };
 
-  const toggleBold   = () => { focus(); try { document.execCommand("bold"); } catch {}   props.scheduleSave?.(); props.onChange?.(edRef.current!.innerHTML); refreshTyping(); };
-  const toggleItalic = () => { focus(); try { document.execCommand("italic"); } catch {} props.scheduleSave?.(); props.onChange?.(edRef.current!.innerHTML); refreshTyping(); };
+  const toggleInlineFormat = (format: InlineFormat) => {
+    const ed = edRef.current!;
+    restoreRecentClickCaretIfSafe();
+    const range = selectionRangeIn(ed);
+    if (!range) {
+      focus();
+      return;
+    }
+
+    if (range.collapsed) {
+      const caret = range.cloneRange();
+      const currentOffset = textOffsetAt(ed, range.startContainer, range.startOffset);
+      const override = caretFormatOverrideRef.current;
+      const current = override && override.textOffset === currentOffset
+        ? { ...override.state }
+        : {
+            bold: isInlineFormatActive(range.startContainer as Text | HTMLElement, "bold") ||
+              document.queryCommandState("bold"),
+            italic: isInlineFormatActive(range.startContainer as Text | HTMLElement, "italic") ||
+              document.queryCommandState("italic"),
+          };
+      const next = { ...current, [format]: !current[format] };
+      const selection = window.getSelection?.();
+      focus();
+      if (selection) {
+        selection.removeAllRanges();
+        selection.addRange(caret);
+      }
+      markHistoryBoundary(ed);
+      try { document.execCommand(format === "bold" ? "bold" : "italic"); } catch {}
+      const active = window.getSelection?.();
+      const activeRange = active?.rangeCount ? active.getRangeAt(0) : null;
+      if (activeRange?.collapsed) {
+        caretFormatOverrideRef.current = {
+          textOffset: textOffsetAt(ed, activeRange.startContainer, activeRange.startOffset),
+          state: next,
+        };
+      }
+      typingModeRef.current = next;
+      setTypingMode(next);
+      emitHud(next);
+      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
+      return;
+    }
+
+    caretFormatOverrideRef.current = null;
+    const nodes = selectedTextNodes(ed, range);
+    if (!range.toString().length) return;
+    const enabled = nodes.length === 0 || !nodes.every((node) => isInlineFormatActive(node, format));
+    markHistoryBoundary(ed);
+    if (!applyInlineFormatToSelection(ed, format, enabled)) return;
+    ed.dispatchEvent(new InputEvent("input", {
+      bubbles: true,
+      inputType: format === "bold" ? "formatBold" : "formatItalic",
+    }));
+    props.scheduleSave?.();
+    props.onChange?.(ed.innerHTML);
+    refreshTyping();
+    emitHud(typingModeRef.current);
+  };
+
+  const toggleBold = () => toggleInlineFormat("bold");
+  const toggleItalic = () => toggleInlineFormat("italic");
 
   const getHTML = () => edRef.current!.innerHTML;
   const setHTML = (html: string) => {
@@ -1535,6 +2226,10 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const key = ev.key; 
       if (composing && key !== "Enter") return;
 
+      if (/^(Arrow(Left|Right|Up|Down)|Home|End|PageUp|PageDown)$/.test(key || "")) {
+        requestAnimationFrame(() => refreshTyping());
+      }
+
       if (nextPresetRef.current) applyPendingPresetIfAny();
 
       const ctrlOrMeta = ev.ctrlKey || ev.metaKey;
@@ -1555,9 +2250,10 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
           if (p) {
             const before = getOffsetsIn(ed, window.getSelection?.() || null);
             const pStart = textOffsetBeforeNode(ed, p);
-            const removed = removeLeadingTabFromParagraph(p);
+            const removed = removeLeadingTabFromParagraph(p, () => markHistoryBoundary(ed));
             if (removed) {
               ensureParagraphMarkersNearCaret(ed);
+              ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "deleteContentBackward" }));
               if (before) {
                 const adjust = (v: number) => v > pStart ? Math.max(pStart, v - TAB_STR.length) : v;
                 setSelectionIn(ed, adjust(before.start), adjust(before.end));
@@ -1635,20 +2331,9 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
           // After Enter, temporarily block regular nudges for 240ms
           enterSnapGuardUntil.current = performance.now() + 240;
 
-          // Apply preset to the new paragraph on the next frame after DOM insertion
+          // Recheck after the new paragraph and caret have reached layout.
           requestAnimationFrame(() => requestAnimationFrame(() => {
-            const sc = scrollerRef.current;
-            if (!sc) return;
-
-            const y = caretYWithMarker(sc);
-            if (y == null) return;
-
-            const target = sc.clientHeight * TW_TARGET;
-            const max = sc.scrollHeight - sc.clientHeight;
-            let next = sc.scrollTop + (y - target);
-            if (next < 0) next = 0;
-            if (next > max) next = max;
-            sc.scrollTop = next;
+            nudgeTypewriter(true);
 
             // Give a little extra time and then release the guard
             enterSnapGuardUntil.current = performance.now() + 40;
@@ -1669,6 +2354,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       e.stopPropagation();
       const text = e.clipboardData?.getData("text/plain") ?? "";
       restoreRecentClickCaretIfSafe();
+      markHistoryBoundary(ed);
       insertPlainTextStrict(ed, text);
       if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
       props.scheduleSave?.();
@@ -1704,20 +2390,20 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   /* ---- Undo/Redo + Curly replacement ---- */
   useEffect(() => {
     const ed = edRef.current!;
-    const c = normalizeCurly(props.curly);
-    const curlySetting =
-      c && (c as any).enabled
-        ? { enabled: true, map: { left: (c as any).left, right: (c as any).right } }
-        : { enabled: false, map: { left: "{", right: "}" } };
-
     const ctl = attachUndoCurly(ed, {
       boardId: effectiveId,
-      limit: 20,
-      curly: curlySetting,
-      hooks: { scheduleSave: props.scheduleSave },
+      limit: 50,
+      curly: () => curlySettingRef.current,
+      hooks: {
+        scheduleSave: props.scheduleSave,
+        onChange: (html) => {
+          onChangeRef.current?.(html);
+          bumpGoalRef.current();
+        },
+      },
     });
     return () => ctl.destroy();
-  }, [effectiveId, props.curly, props.scheduleSave]);
+  }, [effectiveId, props.scheduleSave]);
 
   // WebView/contentEditable can keep the previous caret when moving from a lower paragraph
   // back to an upper paragraph. Anchor every non-drag LMB release by its real screen
@@ -1756,7 +2442,10 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const isDrag = dx > 4 || dy > 4;
       const pt = { x: e.clientX, y: e.clientY };
       down = null;
-      if (isDrag) return;
+      if (isDrag) {
+        requestAnimationFrame(() => refreshTyping());
+        return;
+      }
 
       // v5: TextBoard deliberately does not support browser double-click word selection.
       // Any non-drag LMB release is treated as a plain caret placement.
@@ -1766,6 +2455,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       if (anchoredNow) {
         lastClickPointRef.current = { x: pt.x, y: pt.y, t: performance.now(), dirty: false };
       }
+      requestAnimationFrame(() => refreshTyping());
 
       // Safety pass: if WebView applies a late native selection after mouseup, repair it
       // before the next command. Do not touch intentional selections.
@@ -1800,6 +2490,30 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
     const onCtx = (e: MouseEvent) => {
       if (!ed.contains(e.target as Node)) return;
+      let pointRange: Range | null = null;
+      const doc = ed.ownerDocument as Document & {
+        caretRangeFromPoint?: (x: number, y: number) => Range | null;
+        caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null;
+      };
+      try {
+        pointRange = doc.caretRangeFromPoint?.(e.clientX, e.clientY) ?? null;
+        if (!pointRange) {
+          const point = doc.caretPositionFromPoint?.(e.clientX, e.clientY);
+          if (point) {
+            pointRange = doc.createRange();
+            pointRange.setStart(point.offsetNode, point.offset);
+            pointRange.collapse(true);
+          }
+        }
+      } catch {}
+      rightClickTextOffsetRef.current = pointRange && ed.contains(pointRange.startContainer)
+        ? textOffsetAt(ed, pointRange.startContainer, pointRange.startOffset)
+        : (() => {
+            const activeRange = selectionRangeIn(ed);
+            return activeRange?.collapsed
+              ? textOffsetAt(ed, activeRange.startContainer, activeRange.startOffset)
+              : null;
+          })();
       const off = getOffsetsIn(ed, window.getSelection?.() || null);
       if (off) lastSelRef.current = off;
 

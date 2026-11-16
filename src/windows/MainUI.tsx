@@ -101,7 +101,7 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
 
 // --- AppVersion (UI 표기: Tauri면 실제 버전, 웹이면 fallback) ---
 const AppVersion: React.FC<{ fallback?: string }> = ({
-  fallback = "v1.1.1-portable",
+  fallback = "v1.2.0-portable",
 }) => {
   const [v, setV] = React.useState<string>(fallback);
 
@@ -813,7 +813,11 @@ const applySnap = (s: HistorySnap) => {
   const imagePathsRef = useRef(imagePaths);
   React.useEffect(() => { imagePathsRef.current = imagePaths; }, [imagePaths]);
 
+  const printExportActiveRef = useRef(false);
+
   async function onExportPrint(provider?: () => string) {
+    if (printExportActiveRef.current) return;
+    printExportActiveRef.current = true;
     const hideWait = showPrintWait(io, "Preparing print preview…");
 
     const onMsg = (ev: MessageEvent) => {
@@ -825,10 +829,12 @@ const applySnap = (s: HistorySnap) => {
       }
       if (d.who === "splitwriter" && d.type === "SW_PRINT_CLOSED") {
         try { hideWait(); } catch {}
+        printExportActiveRef.current = false;
         window.removeEventListener("message", onMsg);
       }
       if (d.__sw_print_done__) {
         try { hideWait(); } catch {}
+        printExportActiveRef.current = false;
         window.removeEventListener("message", onMsg);
       }
     };
@@ -851,14 +857,20 @@ const applySnap = (s: HistorySnap) => {
     const tf = (prefs as any)?.typeface;
     const bodyPx = Number(tf?.body?.size ?? 16);
 
-    printHTML(getHTML, {
-      page: "A4",
-      marginMm: 18,
-      baseFont: { family: String(tf?.body?.name || "system-ui"), sizePx: bodyPx },
-      title: "Splitwriter",
-      usePaged: true,
-      onlyPageNumber: true,
-    });
+    try {
+      printHTML(getHTML, {
+        page: "A4",
+        marginMm: 18,
+        baseFont: { family: String(tf?.body?.name || "system-ui"), sizePx: bodyPx },
+        title: "Splitwriter",
+        usePaged: true,
+        onlyPageNumber: true,
+      });
+    } catch (error) {
+      printExportActiveRef.current = false;
+      window.removeEventListener("message", onMsg);
+      throw error;
+    }
   }
 
   // Safe verification (never mutates image src)
@@ -2409,6 +2421,11 @@ const applySnap = (s: HistorySnap) => {
           disabled: !boardId,
           onClick: () => boardId && emitTextToggle(boardId, "spell"),
         },
+        {
+          label: "Set Echo View Start Here",
+          disabled: !boardId,
+          onClick: () => boardId && window.dispatchEvent(new CustomEvent("sw:echo:set-start", { detail: { id: boardId } })),
+        },
       ];
     }
 
@@ -2924,7 +2941,7 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         >
           {/* left: version */}
           <span style={{ opacity: 0.8, whiteSpace: "nowrap" }}>
-            <AppVersion fallback="v1.1.1-portable" />
+            <AppVersion fallback="v1.2.0-portable" />
           </span>
 
           {/* center: repo link (accent only) */}

@@ -1,7 +1,7 @@
 {
   "name": "splitwriter",
   "private": true,
-  "version": "1.1.1-portable",
+  "version": "1.2.0-portable",
   "type": "module",
   "scripts": {
     "dev": "vite --port 5173 --strictPort",
@@ -12,10 +12,8 @@
     "tauri:build": "tauri build"
   },
   "dependencies": {
-    "@pdf-lib/fontkit": "^1.1.1",
     "@tauri-apps/api": "^1.5.0",
     "pagedjs": "^0.4.3",
-    "pdf-lib": "^1.17.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-router-dom": "^6.23.0"

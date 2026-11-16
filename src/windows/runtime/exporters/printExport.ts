@@ -1,8 +1,7 @@
 const PAGED_POLYFILL = "/vendor/paged.polyfill.js";
 
-// 안정형 print/export:
-// - hidden iframe 내부 스크립트가 아니라, 부모 창에서 iframe을 제어한다.
-// - WebView2/Tauri에서 자동 print()가 씹히는 경우를 대비해 미리보기 + 수동 Print 버튼을 남긴다.
+// Render the printable document in an offscreen iframe and open only the
+// WebView/Windows native print dialog.
 export type PrintOptions = {
   page?: "A4" | "Letter";
   marginMm?: number | { top: number; right: number; bottom: number; left: number };
@@ -10,7 +9,7 @@ export type PrintOptions = {
   title?: string;
   usePaged?: boolean;
   onlyPageNumber?: boolean;
-  /** 기본 true. 자동 호출이 막히면 미리보기의 Print 버튼을 누르면 된다. */
+  /** 기본 true. */
   autoPrint?: boolean;
 };
 
@@ -319,69 +318,20 @@ export function printHTML(getHTML: () => string, opts: PrintOptions = {}) {
 
   removePreviousPrintHost();
 
-  const host = document.createElement("div");
-  host.setAttribute("data-sw-print-host", "1");
-  host.style.cssText = [
-    "position:fixed",
-    "inset:0",
-    "z-index:2147483646",
-    "background:#0b0d0f",
-    "display:grid",
-    "grid-template-rows:42px 1fr",
-    "box-shadow:0 0 0 1px rgba(255,255,255,.12) inset",
-  ].join(";");
-
-  const bar = document.createElement("div");
-  bar.style.cssText = [
-    "display:flex",
-    "align-items:center",
-    "gap:8px",
-    "padding:6px 10px",
-    "background:#15181d",
-    "color:#dfe6ef",
-    "font:12px system-ui, -apple-system, Segoe UI, sans-serif",
-    "border-bottom:1px solid rgba(255,255,255,.12)",
-  ].join(";");
-
-  const label = document.createElement("div");
-  label.textContent = "Print preview — choose ‘Save as PDF’ in the print dialog.";
-  label.style.cssText = "opacity:.82; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;";
-
-  const spacer = document.createElement("div");
-  spacer.style.flex = "1";
-
-  const makeBtn = (text: string) => {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = text;
-    btn.style.cssText = [
-      "height:28px",
-      "padding:0 12px",
-      "border-radius:8px",
-      "border:1px solid rgba(255,255,255,.16)",
-      "background:rgba(255,255,255,.08)",
-      "color:#e8edf4",
-      "font:12px system-ui, -apple-system, Segoe UI, sans-serif",
-      "cursor:pointer",
-    ].join(";");
-    return btn;
-  };
-
-  const printBtn = makeBtn("Print / Save PDF");
-  const closeBtn = makeBtn("Close");
-
   const frame = document.createElement("iframe");
-  frame.setAttribute("title", "Splitwriter print preview");
+  frame.setAttribute("title", "Splitwriter print document");
+  frame.setAttribute("data-sw-print-host", "1");
   frame.style.cssText = [
-    "width:100%",
-    "height:100%",
+    "position:fixed",
+    "left:-12000px",
+    "top:0",
+    "width:210mm",
+    "height:297mm",
     "border:0",
     "background:#fff",
+    "pointer-events:none",
   ].join(";");
-
-  bar.append(label, spacer, printBtn, closeBtn);
-  host.append(bar, frame);
-  document.body.appendChild(host);
+  document.body.appendChild(frame);
 
   let closed = false;
   let printing = false;
@@ -392,7 +342,7 @@ export function printHTML(getHTML: () => string, opts: PrintOptions = {}) {
     closed = true;
     try { frame.contentWindow?.removeEventListener("afterprint", onAfterPrint as any); } catch {}
     try { window.removeEventListener("afterprint", onAfterPrint as any); } catch {}
-    try { host.remove(); } catch {}
+    try { frame.remove(); } catch {}
     notifyPrintMessage("SW_PRINT_CLOSED");
     notifyPrintDone();
   };
@@ -417,14 +367,10 @@ export function printHTML(getHTML: () => string, opts: PrintOptions = {}) {
       try { win.print(); } catch (err) { throw err; }
     } catch (err) {
       console.error("[Splitwriter] print failed:", err);
-      label.textContent = "Print command was blocked. Use the Print / Save PDF button again.";
-    } finally {
-      window.setTimeout(() => { printing = false; }, 250);
+      printing = false;
+      cleanup();
     }
   };
-
-  printBtn.onclick = () => { void doPrint(); };
-  closeBtn.onclick = cleanup;
 
   frame.onload = async () => {
     const doc = frame.contentDocument;
@@ -439,7 +385,7 @@ export function printHTML(getHTML: () => string, opts: PrintOptions = {}) {
 
     if (resolved.autoPrint && !autoTried && !closed) {
       autoTried = true;
-      // WebView2/Tauri에서 즉시 호출이 무시되는 경우가 있어 한 프레임 늦춘다.
+      // Let the document finish layout before opening the native print dialog.
       window.setTimeout(() => { void doPrint(); }, 80);
     }
   };
