@@ -1,12 +1,12 @@
 {
   "package": {
     "productName": "Splitwriter",
-    "version": "1.2.0-portable"
+    "version": "2.0.0-portable"
   },
   "build": {
-    "beforeDevCommand": "vite --port 5173 --strictPort",
+    "beforeDevCommand": "vite --host 127.0.0.1 --port 5175 --strictPort",
     "beforeBuildCommand": "vite build",
-    "devPath": "http://localhost:5173",
+    "devPath": "http://127.0.0.1:5175",
     "distDir": "../dist"
   },
   "tauri": {
@@ -14,14 +14,15 @@
       {
         "label": "main",
         "title": "Splitwriter",
-        "width": 1100,
-        "height": 720,
+        "width": 1440,
+        "height": 900,
         "minWidth": 900,
         "minHeight": 600,
         "resizable": true,
         "fullscreen": false,
         "decorations": false,
         "transparent": false,
+        "fileDropEnabled": false,
         "visible": true
       }
     ],
@@ -57,7 +58,7 @@
       }
     },
     "security": {
-      "csp": "default-src 'self' blob: data: ipc: http://localhost:*; img-src 'self' blob: data: *; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src http://localhost:* ipc:; frame-src 'self' blob: data:"
+      "csp": "default-src 'self' blob: data: ipc: http://localhost:* http://127.0.0.1:*; img-src 'self' blob: data: *; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src http://localhost:* http://127.0.0.1:* ipc:; frame-src 'self' blob: data:"
     },
     "bundle": {
       "identifier": "com.splitwriter.app",

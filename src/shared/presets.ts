@@ -4,7 +4,7 @@ import { invoke } from "@tauri-apps/api/tauri";
 import { appConfigDir, executableDir, join } from "@tauri-apps/api/path";
 import { open as openDialog } from "@tauri-apps/api/dialog";
 import { open as openInOS } from "@tauri-apps/api/shell";
-import { DEFAULT_PREFS, type SplitwriterPrefs } from "./defaultPrefs";
+import { DEFAULT_PREFS, normalizeParagraphIndent, type SplitwriterPrefs } from "./defaultPrefs";
 
 async function isPortable() {
   try {
@@ -31,7 +31,7 @@ export async function revealPresetFolder(): Promise<void> {
   await invoke("reveal_preset_folder", { path: dir });
 }
 
-// 프리셋 저장 (Theme 포함)
+// Presets store the writing profile; machine-specific and autosave settings stay global.
 export async function savePreset(name: string, prefs: SplitwriterPrefs) {
   const dir = await presetRootDir();
   const file = await join(dir, `${name}.swpreset.json`);
@@ -109,19 +109,15 @@ export async function loadPreset(name: string): Promise<SplitwriterPrefs | null>
 
     // metadata(version/name/createdAt)는 버리고, 실제 prefs 서브셋만 뽑는다
     const picked: SplitwriterPrefs = {
-      workingFolder: typeof raw.workingFolder === "string" ? raw.workingFolder : "",
-      autosave: typeof raw.autosave === "boolean" ? raw.autosave : DEFAULT_PREFS.autosave,
-      autosaveIntervalSec:
-        typeof raw.autosaveIntervalSec === "number" ? raw.autosaveIntervalSec : DEFAULT_PREFS.autosaveIntervalSec,
       typeface: raw.typeface ?? DEFAULT_PREFS.typeface,
+      paragraphIndent: normalizeParagraphIndent(raw.paragraphIndent),
       accentColor: typeof raw.accentColor === "string" ? raw.accentColor : DEFAULT_PREFS.accentColor,
+      manuscriptGapLines: Number.isInteger(raw.manuscriptGapLines) && raw.manuscriptGapLines >= 0 && raw.manuscriptGapLines <= 50
+        ? raw.manuscriptGapLines : DEFAULT_PREFS.manuscriptGapLines,
       writingGoal: raw.writingGoal ?? DEFAULT_PREFS.writingGoal,
       bracket: raw.bracket ?? DEFAULT_PREFS.bracket,
       theme: raw.theme === "light" ? "light" : "dark",
-      // inputLocale는 SplitwriterPrefs에 넣으면 여기까지 포함
-      ...(typeof raw.inputLocale === "string"
-        ? ({ inputLocale: raw.inputLocale } as any)
-        : ({} as any)),
+      inputLocale: typeof raw.inputLocale === "string" ? raw.inputLocale : DEFAULT_PREFS.inputLocale,
     };
 
     return picked;
@@ -133,14 +129,12 @@ export async function loadPreset(name: string): Promise<SplitwriterPrefs | null>
 // "Default preset" 버튼에서 사용하는 공장 초기값
 export async function applyDefault(): Promise<SplitwriterPrefs> {
   return {
-    workingFolder: "",
-    autosave: DEFAULT_PREFS.autosave,
-    autosaveIntervalSec: DEFAULT_PREFS.autosaveIntervalSec,
     typeface: DEFAULT_PREFS.typeface,
     accentColor: DEFAULT_PREFS.accentColor,
+    manuscriptGapLines: DEFAULT_PREFS.manuscriptGapLines,
     writingGoal: DEFAULT_PREFS.writingGoal,
     bracket: DEFAULT_PREFS.bracket,
     theme: DEFAULT_PREFS.theme,
-    inputLocale: (DEFAULT_PREFS as any).inputLocale ?? "auto",
-  } as any;
+    inputLocale: DEFAULT_PREFS.inputLocale,
+  };
 }

@@ -18,7 +18,8 @@ type IO = {
   notify?: (msg: string, lvl?: "info" | "warn" | "error", ttl?: number) => void;
 };
 
-type Ask3 = (msg: string) => Promise<"save" | "discard" | "cancel">;
+type Ask3Labels = { save: string; discard: string; cancel: string };
+type Ask3 = (msg: string, labels?: Ask3Labels) => Promise<"save" | "discard" | "cancel">;
 
 type Messages = {
   OPEN: string;
@@ -154,8 +155,8 @@ export function getCurrentFilePath(): string | null {
 
 export function initAppActions(deps: Deps) {
   const base: Messages = {
-    OPEN: "Open a project? Unsaved changes will be lost.",
-    NEW: "Create a new project? Unsaved changes will be lost.",
+    OPEN: "Unsaved changes. Continue?",
+    NEW: "Unsaved changes. Continue?",
     QUIT: "There are unsaved changes.\nQuit without saving?",
     RELOAD: "Save before reload?",
   };
@@ -191,8 +192,27 @@ async function trySave(): Promise<boolean> {
   }
 }
 
+async function confirmProjectReplacement(message: string, action: "Open" | "Create") {
+  const { io, ask, ask3 } = need();
+  if (!io.isDirty()) return true;
+  if (!ask3) return ask(message);
+
+  const choice = await ask3(message, {
+    save: `Save & ${action}`,
+    discard: `Discard & ${action}`,
+    cancel: "Cancel",
+  });
+  if (choice === "cancel") return false;
+  if (choice === "save") return trySave();
+  return true;
+}
+
 function ensureSwonExt(p: string) {
   return /\.swon$/i.test(p) ? p : `${p}.swon`;
+}
+
+function dispatchProjectOpenState(event: "sw:project:opening" | "sw:project:opened" | "sw:project:open-cancelled", path?: string) {
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(event, { detail: { path } }));
 }
 
 /* ---------- actions ---------- */
@@ -283,11 +303,18 @@ export async function saveAsAndBind(): Promise<string | null> {
  * Ctrl+O / 메뉴 Open...
  */
 export async function openWithGuard(): Promise<void> {
-  const { io, ask, messages, hasBoundFileRef } = need();
+  const { io, messages, hasBoundFileRef } = need();
 
-  if (io.isDirty() && !(await ask(messages.OPEN))) return;
+  if (!(await confirmProjectReplacement(messages.OPEN, "Open"))) return;
 
-  const ret = await io.open(); // void | string | null
+  dispatchProjectOpenState("sw:project:opening");
+  let ret: any;
+  try {
+    ret = await io.open(); // void | string | null
+  } catch (error) {
+    dispatchProjectOpenState("sw:project:open-cancelled");
+    throw error;
+  }
 
   const path =
     (typeof ret === "string" && ret) ||
@@ -297,6 +324,9 @@ export async function openWithGuard(): Promise<void> {
   if (path) {
     noteCurrentFile(path);
     hasBoundFileRef.current = true;
+    dispatchProjectOpenState("sw:project:opened", path);
+  } else {
+    dispatchProjectOpenState("sw:project:open-cancelled");
   }
 }
 
@@ -306,7 +336,7 @@ export async function openWithGuard(): Promise<void> {
  * - IO 가 제공하는 경로 기반 open 함수를 우선 사용
  */
 export async function openByPath(absPath: string): Promise<void> {
-  const { io, ask, messages, hasBoundFileRef } = need();
+  const { io, messages, hasBoundFileRef } = need();
 
   if (!absPath) return;
 
@@ -315,26 +345,32 @@ export async function openByPath(absPath: string): Promise<void> {
   if (_samePath(before, absPath)) return;
 
   // 변경사항 경고
-  if (io.isDirty() && !(await ask(messages.OPEN))) return;
+  if (!(await confirmProjectReplacement(messages.OPEN, "Open"))) return;
 
   const anyIO: any = io;
   let ret: any = null;
 
   // 1순위: 경로 기반 헬퍼들
-  if (typeof anyIO.openAt === "function") {
-    ret = await anyIO.openAt(absPath);
-  } else if (typeof anyIO.openByPath === "function") {
-    ret = await anyIO.openByPath(absPath);
-  } else if (typeof anyIO.openFile === "function") {
-    ret = await anyIO.openFile(absPath);
-  } else if (typeof anyIO.openSwon === "function") {
-    ret = await anyIO.openSwon(absPath);
-  } else if (typeof anyIO.open === "function" && anyIO.open.length >= 1) {
-    // open(path) 형태를 지원하는 경우
-    ret = await anyIO.open(absPath);
-  } else if (typeof anyIO.open === "function") {
-    // 최후 폴백: 기존 Ctrl+O 방식(다이얼로그) 그대로
-    ret = await anyIO.open();
+  dispatchProjectOpenState("sw:project:opening", absPath);
+  try {
+    if (typeof anyIO.openAt === "function") {
+      ret = await anyIO.openAt(absPath);
+    } else if (typeof anyIO.openByPath === "function") {
+      ret = await anyIO.openByPath(absPath);
+    } else if (typeof anyIO.openFile === "function") {
+      ret = await anyIO.openFile(absPath);
+    } else if (typeof anyIO.openSwon === "function") {
+      ret = await anyIO.openSwon(absPath);
+    } else if (typeof anyIO.open === "function" && anyIO.open.length >= 1) {
+      // open(path) 형태를 지원하는 경우
+      ret = await anyIO.open(absPath);
+    } else if (typeof anyIO.open === "function") {
+      // 최후 폴백: 기존 Ctrl+O 방식(다이얼로그) 그대로
+      ret = await anyIO.open();
+    }
+  } catch (error) {
+    dispatchProjectOpenState("sw:project:open-cancelled");
+    throw error;
   }
 
   const path =
@@ -346,6 +382,9 @@ export async function openByPath(absPath: string): Promise<void> {
   if (path) {
     noteCurrentFile(path);
     hasBoundFileRef.current = true;
+    dispatchProjectOpenState("sw:project:opened", path);
+  } else {
+    dispatchProjectOpenState("sw:project:open-cancelled");
   }
 }
 
@@ -364,8 +403,8 @@ export async function openSwonWithGuard(absPath: string) {
 }
 
 export async function newWithGuard() {
-  const { io, ask, messages, hasBoundFileRef } = need();
-  if (io.isDirty() && !(await ask(messages.NEW))) return;
+  const { io, messages, hasBoundFileRef } = need();
+  if (!(await confirmProjectReplacement(messages.NEW, "Create"))) return;
 
   await io.newFile();
   hasBoundFileRef.current = false;

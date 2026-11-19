@@ -27,6 +27,7 @@ export type WritingGoalProps = {
 
 export type TextToolbarProps = {
   typingMode: TypingMode;
+  hasTextSelection: boolean;
   onBold: () => void;
   onItalic: () => void;
   onAlignLeft: () => void;
@@ -38,6 +39,7 @@ export type TextToolbarProps = {
   style?: React.CSSProperties;
   className?: string;
   writingGoal?: WritingGoalProps;
+  scenarioWidth?: { value: number; onChange: (value: number) => void };
 };
 
 /* ---------- Shared button (preserve original behavior) ---------- */
@@ -48,8 +50,8 @@ const btnStyle = (active?: boolean): React.CSSProperties => ({
   alignItems: "center",
   justifyContent: "center",
   borderRadius: 3,
-  border: `1px solid ${active ? "rgba(106,168,255,0.8)" : "var(--border)"}`,
-  background: active ? "rgba(106,168,255,0.08)" : "var(--btn-bg)",
+  border: active ? "1px solid var(--tb-active-border, rgba(106,168,255,0.8))" : "1px solid var(--border)",
+  background: active ? "var(--tb-active-bg, rgba(106,168,255,0.08))" : "var(--btn-bg)",
   filter: active ? "brightness(0.85)" : "none",
   cursor: "pointer",
   userSelect: "none",
@@ -59,6 +61,7 @@ const btnStyle = (active?: boolean): React.CSSProperties => ({
 function ToolBtn({
   title,
   active,
+  disabled = false,
   icon,
   onClick,
   onPointerDown,
@@ -69,6 +72,7 @@ function ToolBtn({
 }: {
   title: string;
   active?: boolean;
+  disabled?: boolean;
   icon: string;
   onClick: () => void;
   onPointerDown?: () => void;
@@ -79,6 +83,7 @@ function ToolBtn({
   return (
     <button
       type="button"
+      disabled={disabled}
       title={title}
       aria-pressed={!!active}
       onMouseDown={(e) => {
@@ -94,7 +99,7 @@ function ToolBtn({
         requestAnimationFrame(() => onClick());
       }}
       tabIndex={-1}
-      style={btnStyle(active)}
+      style={{ ...btnStyle(active), ...(disabled ? { opacity: 0.45, cursor: "not-allowed" } : {}) }}
       className={["tb-iconbtn", className].filter(Boolean).join(" ")}
       data-cmd={dataCmd}
       aria-label={title}
@@ -121,6 +126,7 @@ const S = {
 /* ---------- Main component ---------- */
 const TextToolbar: React.FC<TextToolbarProps> = ({
   typingMode,
+  hasTextSelection,
   onBold,
   onItalic,
   onAlignLeft,
@@ -132,6 +138,7 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
   style,
   className,
   writingGoal,
+  scenarioWidth,
 }) => {
   const goalEnabled = !!writingGoal?.enabled && (writingGoal?.target ?? 0) > 0;
   const goalMode = writingGoal?.mode ?? "chars";
@@ -146,7 +153,7 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
     "var(--text-2, rgba(15,23,42,0.65))";
   const hitColor =
     writingGoal?.hitColor ||
-    "var(--accent-1, var(--accent))";
+    "var(--accent)";
 
   return (
     <div className={className} style={{ ...S.row, ...style }}>
@@ -155,6 +162,7 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
       <ToolBtn
         title="Bold (Ctrl+B)"
         active={typingMode.bold}
+        disabled={!hasTextSelection}
         onPointerDown={onToolbarPointerDown}
         onClick={onBold}
         icon={ICONS.Bold}
@@ -162,6 +170,7 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
       <ToolBtn
         title="Italic (Ctrl+I)"
         active={typingMode.italic}
+        disabled={!hasTextSelection}
         onPointerDown={onToolbarPointerDown}
         onClick={onItalic}
         icon={ICONS.Italic}
@@ -171,24 +180,28 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
 
       <ToolBtn
         title="Align Left"
+        className="tb-align-btn"
         onPointerDown={onToolbarPointerDown}
         onClick={onAlignLeft}
         icon={ICONS.AlignLeft}
       />
       <ToolBtn
         title="Align Center"
+        className="tb-align-btn"
         onPointerDown={onToolbarPointerDown}
         onClick={onAlignCenter}
         icon={ICONS.AlignCenter}
       />
       <ToolBtn
         title="Align Right"
+        className="tb-align-btn"
         onPointerDown={onToolbarPointerDown}
         onClick={onAlignRight}
         icon={ICONS.AlignRight}
       />
       <ToolBtn
         title="Align Justify"
+        className="tb-align-btn"
         onPointerDown={onToolbarPointerDown}
         onClick={onAlignJustify}
         icon={ICONS.AlignJustify}
@@ -232,6 +245,23 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
             {goalTarget.toLocaleString()}
           </span>
         </div>
+      )}
+
+      {scenarioWidth && (
+        <label title={`Scenario format width: ${scenarioWidth.value}%`} style={{ display: "inline-flex", alignItems: "center", gap: 5, height: 24, marginInline: 4, color: "var(--text-muted)", fontSize: 10, whiteSpace: "nowrap", userSelect: "none" }}>
+          <span>Width</span>
+          <input
+            type="range"
+            min={70}
+            max={100}
+            step={1}
+            value={scenarioWidth.value}
+            aria-label="Scenario format width"
+            onMouseDown={(event) => event.stopPropagation()}
+            onChange={(event) => scenarioWidth.onChange(Number(event.currentTarget.value))}
+            style={{ width: 72, height: 14, margin: 0, accentColor: "var(--accent)" }}
+          />
+        </label>
       )}
 
       <ToolBtn

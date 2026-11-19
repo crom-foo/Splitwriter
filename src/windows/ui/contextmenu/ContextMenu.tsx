@@ -14,9 +14,10 @@ type Props = {
   y: number;
   items: MenuItem[];
   onClose: () => void;
+  accentColor?: string;
 };
 
-export default function ContextMenu({ open, x, y, items, onClose }: Props) {
+export default function ContextMenu({ open, x, y, items, onClose, accentColor }: Props) {
   const ref = useRef<HTMLDivElement | null>(null);
   const [active, setActive] = useState(-1);
 
@@ -113,7 +114,12 @@ export default function ContextMenu({ open, x, y, items, onClose }: Props) {
       onPointerDown={(e) => e.stopPropagation()}
       onMouseLeave={() => setActive(-1)}
       onBlur={() => setActive(-1)}
-      style={{ position: "fixed", zIndex: 9999, ...style }}
+      style={{
+        position: "fixed",
+        zIndex: 9999,
+        ...style,
+        ...(accentColor ? { ["--accent" as any]: accentColor } : {}),
+      }}
       onContextMenu={(e) => e.preventDefault()}
     >
       {/* 전역 포커스/보더 제거 + hover/active는 accent */}

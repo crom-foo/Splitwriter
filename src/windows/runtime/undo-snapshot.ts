@@ -337,8 +337,23 @@ export function attachUndoCurly(el: HTMLElement, opts: Opts) {
   };
 
   const beforeinput = (event: InputEvent) => {
-    if (composing || compositionCommit) return;
     const inputType = event.inputType || "";
+    const curlyConfig = typeof curly === "function" ? curly() : curly;
+    const data = (event as any).data as string | undefined;
+    const isCurlyReplacementInput = !!curlyConfig?.enabled
+      && inputType === "insertText"
+      && (data === "{" || data === "}")
+      && !(event as any).isComposing;
+
+    // Keep IME composition edits untouched, but don't let the zero-delay
+    // composition-history flush swallow a regular brace typed immediately
+    // after compositionend (common with Korean IMEs).
+    if (composing || (event as any).isComposing) return;
+    if (compositionCommit) {
+      if (!isCurlyReplacementInput) return;
+      flushComposition();
+    }
+
     const group = coalescingKind(inputType);
     const liveSelection = window.getSelection?.();
     const isCollapsed = liveSelection?.isCollapsed ?? true;
@@ -359,21 +374,17 @@ export function attachUndoCurly(el: HTMLElement, opts: Opts) {
       window.setTimeout(() => record(before, beforeSelection), 0);
     }
 
-    const curlyConfig = typeof curly === "function" ? curly() : curly;
-    if (curlyConfig?.enabled && inputType === "insertText") {
-      const data = (event as any).data as string | undefined;
-      if (data === "{" || data === "}") {
-        event.preventDefault();
-        commitPending();
-        const before = lastHTML;
-        const beforeSelection = beforeInputSelection;
-        try {
-          const replacement = data === "{" ? curlyConfig.map.left : curlyConfig.map.right;
-          document.execCommand("insertText", false, replacement);
-        } catch {}
-        commitPending();
-        record(before, beforeSelection);
-      }
+    if (isCurlyReplacementInput && curlyConfig) {
+      event.preventDefault();
+      commitPending();
+      const before = lastHTML;
+      const beforeSelection = beforeInputSelection;
+      try {
+        const replacement = data === "{" ? curlyConfig.map.left : curlyConfig.map.right;
+        document.execCommand("insertText", false, replacement);
+      } catch {}
+      commitPending();
+      record(before, beforeSelection);
     }
   };
 

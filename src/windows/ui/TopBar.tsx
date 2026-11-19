@@ -145,18 +145,26 @@ const TopBar: React.FC<TopBarProps> = ({
   // Status (persist-until-typing)
   // ─────────────────────────────
   const [status, setStatus] = React.useState("");
+  const [stickyStatus, setStickyStatus] = React.useState<{ text: string; label: string; event: string } | null>(null);
   const hasStatusRef = React.useRef(false);
+  const persistentStatusRef = React.useRef(false);
 
   const hideStatus = React.useCallback(() => {
     hasStatusRef.current = false;
+    persistentStatusRef.current = false;
     setStatus("");
   }, []);
 
   useEffect(() => {
     const onStatus = (ev: Event) => {
-      const { text = "" } = (ev as CustomEvent).detail || {};
+      const { text = "", actionLabel = "", actionEvent = "", persistent = false } = (ev as CustomEvent).detail || {};
       if (!text) return;
+      if (persistent && actionLabel && actionEvent) {
+        setStickyStatus({ text, label: actionLabel, event: actionEvent });
+        return;
+      }
       hasStatusRef.current = true;
+      persistentStatusRef.current = false;
       setStatus(text);
     };
     window.addEventListener("sw:status", onStatus as any, { capture: true });
@@ -167,15 +175,25 @@ const TopBar: React.FC<TopBarProps> = ({
   }, [hideStatus]);
 
   useEffect(() => {
+    const clearSticky = () => setStickyStatus(null);
+    window.addEventListener("sw:status:clear-persistent", clearSticky);
+    window.addEventListener("sw:file:cleared", clearSticky);
+    return () => {
+      window.removeEventListener("sw:status:clear-persistent", clearSticky);
+      window.removeEventListener("sw:file:cleared", clearSticky);
+    };
+  }, []);
+
+  useEffect(() => {
     const inEditor = (t: EventTarget | null) =>
       !!(t as HTMLElement | null)?.closest?.('[data-board-id] [contenteditable="true"], textarea, input');
 
     const clearIfTyping = (e: Event) => {
-      if (hasStatusRef.current && inEditor(e.target)) hideStatus();
+      if (hasStatusRef.current && !persistentStatusRef.current && inEditor(e.target)) hideStatus();
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!hasStatusRef.current || !inEditor(e.target)) return;
+      if (!hasStatusRef.current || persistentStatusRef.current || !inEditor(e.target)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const ignore = new Set([
         "Shift","Control","Alt","Meta","CapsLock","Tab","Escape",
@@ -210,11 +228,11 @@ const TopBar: React.FC<TopBarProps> = ({
       !!(t as HTMLElement | null)?.closest?.('[contenteditable="true"], textarea, input');
 
     const clearIfTyping = (e: Event) => {
-      if (hasStatusRef.current && inEditor(e.target)) hideStatus();
+      if (hasStatusRef.current && !persistentStatusRef.current && inEditor(e.target)) hideStatus();
     };
 
     const onKeyDown = (e: KeyboardEvent) => {
-      if (!hasStatusRef.current || !inEditor(e.target)) return;
+      if (!hasStatusRef.current || persistentStatusRef.current || !inEditor(e.target)) return;
       if (e.ctrlKey || e.metaKey || e.altKey) return;
       const ignore = new Set([
         "Shift","Control","Alt","Meta","CapsLock","Tab","Escape",
@@ -245,7 +263,7 @@ const TopBar: React.FC<TopBarProps> = ({
         position: "relative",                 // ⬅ 중앙 오버레이를 위해
         height: BAR_H,
         background: "var(--topbar)",
-        borderBottom: "1px solid var(--topbar-divider)",
+        borderBottom: "1px solid var(--topbar-workspace-divider, var(--topbar-divider))",
         color: "var(--text-1)",
       }}
     >
@@ -275,27 +293,47 @@ const TopBar: React.FC<TopBarProps> = ({
           padding: "0 10px",
         }}
       >
-        {/* Left — Sidebar + Status(글자만) */}
+        {/* Left — Sidebar + status */}
         <div style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
           <IconButton src={SIDEBAR_ICON} alt="Sidebar" onClick={onToggleSidebar} />
-          {!!status && (
+          {(stickyStatus || status) && (
             <div
-              title={status}
+              title={[stickyStatus?.text, status].filter(Boolean).join(" · ")}
               style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
                 fontSize: 10,
                 lineHeight: "1",
                 whiteSpace: "nowrap",
                 overflow: "hidden",
-                textOverflow: "ellipsis",
                 color: "var(--text-2)",
                 letterSpacing: 0.2,
                 opacity: 0.9,
-                pointerEvents: "none",
+                pointerEvents: "auto",
                 minWidth: 0,
-                maxWidth: 260,
+                maxWidth: 560,
               }}
             >
-              {status}
+              {stickyStatus && (
+                <>
+                  <span style={{ flex: "none", color: "var(--text-2)" }}>{stickyStatus.text}</span>
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setStickyStatus(null);
+                      window.dispatchEvent(new Event(stickyStatus.event));
+                    }}
+                    style={{ flex: "none", border: 0, padding: "3px 6px", borderRadius: 4, background: `color-mix(in srgb, ${accent} 12%, transparent)`, color: accent, font: "inherit", fontWeight: 600, cursor: "pointer" }}
+                  >
+                    {stickyStatus.label}
+                  </button>
+                </>
+              )}
+              {status && (
+                <span style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis" }}>{status}</span>
+              )}
             </div>
           )}
         </div>

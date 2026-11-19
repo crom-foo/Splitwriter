@@ -15,6 +15,8 @@ type EchoReaderProps = {
 
   /** Typeface presets from TextBoard (kept in sync with Preferences) */
   typefaces?: TypefaceTable;
+  /** User-selected accent color from Preferences */
+  accentColor?: string;
   /** 1=Headline, 2=Body, 3=Accent, 4=Etc */
   preset?: number;
 
@@ -27,6 +29,8 @@ type EchoReaderProps = {
 
   /** Start reading from this chunk index (inclusive), relative to tokenized sentences */
   startAt?: number;
+  /** Per-mode start indexes used by paragraph anchors. */
+  startAtByMode?: Partial<Record<SplitMode, number>>;
 
   // ----- Visual parameters -----
   /** Background mix ratio with --accent (0–100), default 20 */
@@ -61,6 +65,10 @@ const CLOSERS = `”’"'\\)\\]\\}〉》」『】>`;
 
 // 분리 모드: SMART(기존) / ENTER(줄바꿈만)
 type SplitMode = "SMART" | "ENTER";
+
+export function countEchoChunks(src: string, mode: SplitMode): number {
+  return mode === "ENTER" ? tokenizeByEnter(src).length : tokenizeEchoText(src).length;
+}
 
 /** Split text by ENTER only (line breaks). */
 function tokenizeByEnter(src?: string): string[] {
@@ -224,6 +232,7 @@ const EchoReader: React.FC<EchoReaderProps> = ({
   open,
   onClose,
   typefaces,
+  accentColor,
   preset = 2,
   fontFamily,
   fontSize,
@@ -246,6 +255,7 @@ const EchoReader: React.FC<EchoReaderProps> = ({
 
   // start from caret index
   startAt = 0,
+  startAtByMode,
 }) => {
   // Split mode: 기본 SMART(현재 분리기)
   const [splitMode, setSplitMode] = useState<SplitMode>("SMART");
@@ -268,7 +278,8 @@ const EchoReader: React.FC<EchoReaderProps> = ({
     return splitMode === "ENTER" ? tokenizeByEnter(text) : tokenizeEchoText(text);
   }, [text, splitMode]);
 
-  const start = Math.max(0, Math.min(startAt ?? 0, chunks.length));
+  const requestedStart = startAtByMode?.[splitMode] ?? startAt ?? 0;
+  const start = Math.max(0, Math.min(requestedStart, chunks.length));
   const view = useMemo(() => chunks.slice(start), [chunks, start]);
   const hasView = view.length > 0;
 
@@ -308,8 +319,9 @@ const EchoReader: React.FC<EchoReaderProps> = ({
   const bgMix = Math.min(100, Math.max(0, accentMix));
   const bdMix = Math.min(100, Math.max(0, borderMix));
   const safeBoxOpacity = Math.max(0, Math.min(1, boxOpacity ?? 1));
-  const boxBg = `color-mix(in oklab, #000 ${100 - bgMix}%, var(--accent, #3ea1ff) ${bgMix}%)`;
-  const boxBorder = `color-mix(in oklab, #000 ${100 - bdMix}%, var(--accent, #3ea1ff) ${bdMix}%)`;
+  const accent = accentColor || "var(--accent)";
+  const boxBg = `color-mix(in oklab, #000 ${100 - bgMix}%, ${accent} ${bgMix}%)`;
+  const boxBorder = `color-mix(in oklab, #000 ${100 - bdMix}%, ${accent} ${bdMix}%)`;
   const ringPx = Math.max(2, Math.round(borderWidth));
   const boxFill = `color-mix(in oklab, ${boxBg} ${Math.round(
     safeBoxOpacity * 100

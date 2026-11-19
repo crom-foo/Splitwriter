@@ -1,5 +1,6 @@
 // src/windows/panes/SplitPane.tsx
 import React from "react";
+import { hasActiveNavigatorBoardDrag } from "../boards/boardDrag";
 
 type Dir = "vertical" | "horizontal";
 
@@ -11,6 +12,7 @@ type Props = {
   minA?: number;                       // A 최소 px
   minB?: number;                       // B 최소 px
   pathKey?: string;
+  insetGutter?: boolean;
   onDragStart?: () => void;
   onDragEnd?: () => void;
   a: React.ReactNode;
@@ -27,6 +29,7 @@ export default function SplitPane({
   minA = 48,
   minB = 48,
   pathKey,
+  insetGutter = false,
   onDragStart,
   onDragEnd,
   a,
@@ -179,10 +182,7 @@ export default function SplitPane({
   };
 
   const visualStyle: React.CSSProperties = {
-    background: "rgba(255,255,255,0.10)",
-    boxShadow: isVert
-      ? "inset 1px 0 rgba(255,255,255,0.06), inset -1px 0 rgba(0,0,0,0.35)"
-      : "inset 0 1px rgba(255,255,255,0.06), inset 0 -1px rgba(0,0,0,0.35)",
+    background: "var(--pane-divider)",
     pointerEvents: "none", // 순수 시각선
   };
 
@@ -268,6 +268,13 @@ export default function SplitPane({
       data-dir={direction}
       data-key={pathKey}
       ref={rootRef}
+      onDragOverCapture={(event) => {
+        if (!hasActiveNavigatorBoardDrag()) return;
+        // The split gutter and its resize hitbox sit between pane drop targets.
+        // Keep the navigator drag cursor in an accepted state while crossing them.
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
       style={{
         position: "relative",
         boxSizing: "border-box",
@@ -290,11 +297,22 @@ export default function SplitPane({
       {/* Gutter 시각선(클릭 처리 없음) */}
       <div
         style={{
-          ...(isVert ? { gridColumn: 2, width: gutterSize } : { gridRow: 2, height: gutterSize }),
-          ...visualStyle,
+          ...(isVert
+            ? { gridColumn: 2, width: gutterSize }
+            : { gridRow: 2, height: gutterSize }),
+          position: "relative",
+          background: insetGutter ? "var(--bg)" : visualStyle.background,
         }}
         aria-hidden
-      />
+      >
+        {insetGutter && <div style={{
+          position: "absolute",
+          background: "var(--pane-divider)",
+          ...(isVert
+            ? { top: 10, bottom: 10, left: 0, right: 0 }
+            : { left: 10, right: 10, top: 0, bottom: 0 }),
+        }} />}
+      </div>
 
       {/* B 셀 */}
       <div

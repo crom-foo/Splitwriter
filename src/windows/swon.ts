@@ -3,9 +3,9 @@ import type { ImageView } from "./boards/ImageBoard";
 
 /**
  * SWON I/O (save/load/new) for Splitwriter.
- * Persists: (1) layout tree, (2) open/archived text, (3) image src + view,
- *           (4) per-project prefs (except workingFolder / autosave / theme),
- *           (5) echo background.
+ * Persists: (1) split layout + Navigator variants, (2) open/archived text,
+ *           (3) image src + view, (4) project profile prefs such as accent color,
+ *           (5) main-window bounds, (6) echo background.
  * Supports Tauri (@tauri-apps/*) and the web (File System Access API + anchor fallback).
  */
 
@@ -13,6 +13,13 @@ export type SwonView = ImageView;
 
 /** Image payload persisted in the SWON. `src` may be an absolute path or a URL. */
 export type SwonImage = { src: string | null; view?: SwonView; file?: string | null };
+export type SwonWindowState = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  maximized: boolean;
+};
 
 export type NotifyLevel = "info" | "warn" | "error";
 export type NotifyFn = (text: string, level?: NotifyLevel, ttlMs?: number) => void;
@@ -22,9 +29,19 @@ export type SwonTree =
   | {
       type: "leaf";
       id: string;
-      kind: "text" | "image" | "viewer" | "edit";
+      kind: "text" | "scenario" | "image" | "viewer" | "edit" | "navigator" | "manuscript";
       textId: string;
       imageId: string;
+      textGroup?: "writing" | "notes";
+      writingBoardIds?: string[];
+      noteBoardIds?: string[];
+      writingEntries?: ({ type: "board"; id: string } | { type: "group"; id: string; name: string; collapsed: boolean; children: string[] })[];
+      writingVariants?: { id: string; name: string; entries: ({ type: "board"; id: string } | { type: "group"; id: string; name: string; collapsed: boolean; children: string[] })[] }[];
+      activeWritingVariantId?: string;
+      noteEntries?: ({ type: "board"; id: string } | { type: "group"; id: string; name: string; collapsed: boolean; children: string[] })[];
+      boardNames?: Record<string, string>;
+      mainPaneLeafId?: string;
+      mainBoardId?: string;
     }
   | {
       type: "split";
@@ -43,10 +60,142 @@ export type SwonFile = {
   archivedText: Record<string, string>;
   images: Record<string, SwonImage>;
   prefs?: any;
+  window?: SwonWindowState;
   echoBg?: string | null;
   savedAt?: string; // ISO timestamp
   title?: string; // filename hint (without .swon) for web flows
 };
+
+function normalizeWindowState(value: any): SwonWindowState | null {
+  if (!value || typeof value !== "object") return null;
+  const { x, y, width, height } = value;
+  if (![x, y, width, height].every((part) => Number.isFinite(part))) return null;
+  if (width < 320 || height < 240) return null;
+  return { x, y, width, height, maximized: value.maximized === true };
+}
+
+function hasRecoverableText(html: string | undefined): boolean {
+  if (!html) return false;
+  const withoutEmptyBlocks = html
+    .replace(/<br\b[^>]*\/?\s*>/gi, "")
+    .replace(/&nbsp;|&#160;|&#x0*a0;/gi, "")
+    .replace(/<[^>]*>/g, "")
+    .replace(/[\u200B-\u200D\uFEFF\s]/g, "");
+  if (withoutEmptyBlocks.length > 0) return true;
+  // Preserve non-text payloads if a future editor stores them in a text board.
+  return /<(?:img|video|audio|svg|table|iframe|object)\b/i.test(html);
+}
+
+function normalizeLegacyNavigator(tree: SwonTree, openText: Record<string, string>): SwonTree {
+  const leaves: Extract<SwonTree, { type: "leaf" }>[] = [];
+  const collectLeaves = (node: SwonTree) => {
+    if (node.type === "leaf") leaves.push(node);
+    else {
+      collectLeaves(node.a);
+      collectLeaves(node.b);
+    }
+  };
+  collectLeaves(tree);
+  const navigator = leaves.find((leaf) => leaf.kind === "navigator");
+  if (!navigator) return tree;
+
+  const entriesForIds = (ids: string[]) => ids.map((id) => ({ type: "board" as const, id }));
+  const flatten = (entries: NonNullable<typeof navigator.writingEntries>) => entries.flatMap((entry) =>
+    entry.type === "board" ? [entry.id] : entry.children);
+  const writingLeaves = leaves.filter((leaf) => leaf.kind === "text" && (leaf.textGroup ?? "writing") === "writing");
+  const noteLeaves = leaves.filter((leaf) => leaf.kind === "text" && leaf.textGroup === "notes");
+  const writingLeafIds = [...new Set(writingLeaves.map((leaf) => leaf.textId))];
+  const noteLeafIds = [...new Set(noteLeaves.map((leaf) => leaf.textId))];
+  const variants = navigator.writingVariants || [];
+  const hasLegacyFields = !variants.length || !navigator.noteEntries?.length || !navigator.writingEntries?.length;
+  if (!hasLegacyFields) return tree;
+
+  const existingWritingIds = [...new Set([
+    ...(navigator.writingBoardIds || []),
+    ...(navigator.writingEntries ? flatten(navigator.writingEntries) : []),
+    ...variants.flatMap((variant) => flatten(variant.entries)),
+  ])];
+  const baseWritingIds = existingWritingIds.length ? existingWritingIds : writingLeafIds;
+  const completeWritingIds = [...new Set([...baseWritingIds, ...writingLeafIds])];
+  let nextVariants = variants.length
+    ? variants.map((variant) => ({
+        ...variant,
+        entries: [...variant.entries, ...completeWritingIds
+          .filter((id) => !flatten(variant.entries).includes(id))
+          .map((id) => ({ type: "board" as const, id }))],
+      }))
+    : [{ id: "main", name: "Main", entries: entriesForIds(completeWritingIds) }];
+
+  if (nextVariants.length && !nextVariants.some((variant) => variant.id === "main")) {
+    nextVariants = [{ id: "main", name: "Main", entries: entriesForIds(writingLeafIds) }, ...nextVariants];
+  }
+  const activeId = navigator.activeWritingVariantId || "main";
+  const activeVariant = nextVariants.find((variant) => variant.id === activeId) || nextVariants[0];
+  const writingEntries = activeVariant?.entries || entriesForIds(writingLeafIds);
+  const existingNoteIds = [...new Set([
+    ...(navigator.noteBoardIds || []),
+    ...(navigator.noteEntries ? flatten(navigator.noteEntries) : []),
+    ...noteLeafIds,
+  ])];
+  const noteEntries = navigator.noteEntries?.length
+    ? [...navigator.noteEntries]
+    : entriesForIds(existingNoteIds);
+  const noteIds = new Set(flatten(noteEntries));
+  for (const id of existingNoteIds) {
+    if (!noteIds.has(id)) {
+      noteEntries.push({ type: "board", id });
+      noteIds.add(id);
+    }
+  }
+  const recoveredIds: string[] = [];
+  const allRegistered = new Set([
+    ...nextVariants.flatMap((variant) => flatten(variant.entries)),
+    ...noteIds,
+  ]);
+  // Any saved, open text payload that has no pane or Navigator reference in an
+  // incomplete legacy file is retained as a Notes board instead of orphaned.
+  for (const id of Object.keys(openText || {})) {
+    if (hasRecoverableText(openText[id]) && !allRegistered.has(id) && !writingLeafIds.includes(id) && !noteIds.has(id)) {
+      noteEntries.push({ type: "board", id });
+      noteIds.add(id);
+      recoveredIds.push(id);
+    }
+  }
+  const boardNames = { ...(navigator.boardNames || {}) };
+  const usedNames = new Set(Object.values(boardNames));
+  let recoveredNumber = 1;
+  for (const id of recoveredIds) {
+    if (boardNames[id]) continue;
+    let name = recoveredNumber === 1 ? "Recovered Document" : `Recovered Document ${String(recoveredNumber).padStart(2, "0")}`;
+    while (usedNames.has(name)) {
+      recoveredNumber += 1;
+      name = `Recovered Document ${String(recoveredNumber).padStart(2, "0")}`;
+    }
+    boardNames[id] = name;
+    usedNames.add(name);
+    recoveredNumber += 1;
+  }
+
+  const update = (node: SwonTree): SwonTree => {
+    if (node.type === "leaf") {
+      if (node.id !== navigator.id) return node;
+      return {
+        ...node,
+        writingVariants: nextVariants,
+        activeWritingVariantId: activeId,
+        writingEntries,
+        writingBoardIds: flatten(writingEntries),
+        noteEntries,
+        noteBoardIds: flatten(noteEntries),
+        boardNames,
+        mainBoardId: node.mainBoardId || writingLeafIds[0],
+        mainPaneLeafId: node.mainPaneLeafId || writingLeaves[0]?.id,
+      };
+    }
+    return { ...node, a: update(node.a), b: update(node.b) };
+  };
+  return update(tree);
+}
 
 /** Host hooks for reading/writing app state. */
 type Opts = {
@@ -64,6 +213,9 @@ type Opts = {
 
   getPrefs: () => any;
   setPrefs: (p: any) => void;
+
+  getWindowState?: () => SwonWindowState | undefined;
+  setWindowState?: (state: SwonWindowState) => void;
 
   getEchoBg: () => string | null;
 
@@ -268,6 +420,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       archivedText: opts.getArchivedText() || {},
       images,
       prefs: prefsToSave,
+      window: opts.getWindowState?.(),
       echoBg: opts.getEchoBg?.() ?? null,
       savedAt: new Date().toISOString(),
       title: fileName || undefined,
@@ -290,7 +443,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       normalized[id] = { src: raw, view: im?.view, file: fileFixed };
     }
 
-    if (data.tree) opts.setTree(data.tree);
+    if (data.tree) opts.setTree(normalizeLegacyNavigator(data.tree, data.openText || {}));
     opts.setOpenText(data.openText || {});
     opts.setArchivedText(data.archivedText || {});
 
@@ -301,6 +454,9 @@ export function setupSwonIO(opts: Opts): SwonIO {
     }
 
     opts.setImages(normalized);
+
+    const windowState = normalizeWindowState(data.window);
+    if (windowState && opts.setWindowState) opts.setWindowState(windowState);
 
     // NOTE: data.echoBg 는 아직 적용 훅(setEchoBg)이 없어서
     //       단순히 저장만 하고 있음. 나중에 필요하면 Opts에 setEchoBg 추가해서
@@ -564,7 +720,8 @@ export function setupSwonIO(opts: Opts): SwonIO {
       openText: {},
       archivedText: {},
       images: {},
-      // prefs: 현재 prefs 기준으로, 전역설정(workingFolder / autosave / theme)만 뺀 상태
+      window: opts.getWindowState?.(),
+      // prefs: project profile settings only; global folder/autosave/theme/language remain app-wide.
       prefs: stripNonProjectPrefs(opts.getPrefs() || {}),
       echoBg: null,
     };

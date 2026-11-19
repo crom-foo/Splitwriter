@@ -316,11 +316,12 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
 
   const empty = !src;
   const hasRuntime = isRuntimeUrl(resolved.url);
-  const isMissing  = !empty && (!hasRuntime && (forceMissing || broken || !!resolved.missing || !resolved.url));
-
-    if (IS_DEV && forceMissing && hasRuntime) {
-    console.warn("[ImageBoard] forceMissing ignored because a runtime URL exists:", resolved.url);
-  }
+  // A runtime URL can still point to a file that no longer exists. The image
+  // element's load error must win; only skip the external missing-path flag
+  // when a runtime URL is available and has not failed to load.
+  const isMissing = !empty && (
+    broken || !!resolved.missing || !resolved.url || (forceMissing && !hasRuntime)
+  );
 
   const rawPath  = displayPath ?? resolved.missing ?? src ?? "";
   const pathStr  = normalizePath(rawPath);
@@ -499,23 +500,26 @@ const ImageBoard = forwardRef<ImageBoardHandle, Props>(function ImageBoard(
               >
                 <div style={{ fontSize: 18, fontWeight: 650, opacity: 0.95 }}>Image not found</div>
               </div>
-              {!!safeName && (
+              {!!pathStr && (
                 <div
                   style={{
                     position: "absolute",
-                    left: 12, right: 12, bottom: "50%",
-                    transform: "translateY(48px)",
-                    fontSize: 12,
+                    left: 20, right: 20, top: "50%",
+                    transform: "translateY(24px)",
                     color: "var(--text-3)",
-                    whiteSpace: "nowrap",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
                     pointerEvents: "none",
                     textAlign: "center",
                   }}
-                  title={safeName}
+                  title={pathStr}
                 >
-                  {safeName}
+                  <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 5, color: "var(--text-2)" }}>
+                    {safeName || pathStr}
+                  </div>
+                  {safeName && pathStr !== safeName && (
+                    <div style={{ fontSize: 11, lineHeight: 1.45, overflowWrap: "anywhere" }}>
+                      {pathStr}
+                    </div>
+                  )}
                 </div>
               )}
             </>

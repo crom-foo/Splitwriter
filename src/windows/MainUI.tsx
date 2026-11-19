@@ -17,7 +17,7 @@
  *   여기서 로직을 구현하지 말고 appActions에 함수를 먼저 추가한 뒤 그 함수를 호출한다.
  */
 import React, { useRef, useState } from "react";
-import { setupSwonIO, type SwonImage } from "./swon"; 
+import { setupSwonIO, type SwonImage, type SwonWindowState } from "./swon";
 import { listen } from "@tauri-apps/api/event";
 import { bootstrapPrefsOnAppStart } from "./overlay/Preferences";
 import {
@@ -46,16 +46,20 @@ import TextBoard, { type TextBoardHandle } from "./boards/TextBoard";
 import ImageBoard, { type ImageBoardHandle } from "./boards/ImageBoard";
 import ViewerBoard, { type ViewerBoardHandle } from "./boards/ViewerBoard";
 import EditBoard from "./boards/EditBoard";
+import NavigatorBoard, { type NavigatorTextItem } from "./boards/NavigatorBoard";
+import ManuscriptBoard from "./boards/ManuscriptBoard";
 
 /* ---------------- Overlays ---------------- */
 import Sidebar from "./overlay/Sidebar";
 import PreferenceModal from "./overlay/Preferences";
-import { DEFAULT_PREFS, type Preferences as PrefsType } from "../shared/defaultPrefs";
+import { DEFAULT_PREFS, normalizeParagraphIndent, type Preferences as PrefsType } from "../shared/defaultPrefs";
+import { normalizeInputLocaleId } from "./runtime/locale";
 import ContextMenu from "./ui/contextmenu/ContextMenu";
 
 /* ---------------- Default_Preset ---------------- */
 const PREFS_STORAGE_KEY = "splitwriter:preferences:v4";
 const PREFS_WF_KEY        = "splitwriter:workingFolder";   
+const TRANSIENT_DIRTY_MARKUP = /data-(?:sel|caret|sw-sel|sw-caret|zw)\b|data-role\s*=\s*["']sel-keeper["']|[\u200B\u200C\u200D\uFEFF]/i;
 
 /* ---------------- Exporters ---------------- */
 import { printHTML } from "./runtime/exporters/printExport";
@@ -78,6 +82,12 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
 
   // Whitelist of allowed option keys
   if ("accentColor" in raw) out.accentColor = String(raw.accentColor || defaults.accentColor);
+  if ("paragraphIndent" in raw) out.paragraphIndent = normalizeParagraphIndent(raw.paragraphIndent);
+  if ("inputLocale" in raw) out.inputLocale = normalizeInputLocaleId(raw.inputLocale);
+  if ("manuscriptGapLines" in raw) {
+    const lines = Number(raw.manuscriptGapLines);
+    if (Number.isInteger(lines) && lines >= 0 && lines <= 50) out.manuscriptGapLines = lines;
+  }
   if ("language"    in raw) out.language    = raw.language || defaults.language;
   if ("theme"       in raw) out.theme       = raw.theme || defaults.theme;
 
@@ -99,9 +109,16 @@ function whitelistPrefsMerge(defaults: PrefsType, raw: any): PrefsType {
   return out as PrefsType;
 }
 
+function prefsMatchCurrentSchema(raw: any, normalized: PrefsType): boolean {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const expectedKeys = Object.keys(normalized);
+  const rawKeys = Object.keys(raw);
+  return expectedKeys.length === rawKeys.length
+    && expectedKeys.every((key) => key in raw && JSON.stringify(raw[key]) === JSON.stringify((normalized as any)[key]));
+}
 // --- AppVersion (UI 표기: Tauri면 실제 버전, 웹이면 fallback) ---
 const AppVersion: React.FC<{ fallback?: string }> = ({
-  fallback = "v1.2.0-portable",
+  fallback = "v2.0-portable",
 }) => {
   const [v, setV] = React.useState<string>(fallback);
 
@@ -110,7 +127,8 @@ const AppVersion: React.FC<{ fallback?: string }> = ({
       try {
         if ((window as any).__TAURI_IPC__) {
           const { getVersion } = await import("@tauri-apps/api/app");
-          setV("v" + (await getVersion()));
+          const version = "v" + (await getVersion());
+          setV(version.replace(/^(v\d+\.\d+)\.0(-portable)$/, "$1$2"));
         }
       } catch {
         /* no-op: fallback 유지 */
@@ -161,6 +179,7 @@ function loadPrefsFromStorage(defaults: PrefsType): PrefsType {
           accent:   parsedV4.typeface?.accent   ?? defaults.typeface.accent,
           etc:      parsedV4.typeface?.etc      ?? defaults.typeface.etc,
         },
+        paragraphIndent: normalizeParagraphIndent(parsedV4.paragraphIndent),
         accentColor: parsedV4.accentColor ?? defaults.accentColor,
         writingGoal: parsedV4.writingGoal ?? defaults.writingGoal,
         bracket:     parsedV4.bracket     ?? defaults.bracket,
@@ -186,6 +205,7 @@ function loadPrefsFromStorage(defaults: PrefsType): PrefsType {
             accent:   tf.accent   ?? defaults.typeface.accent,
             etc:      tf.etc ?? tf.etc2 ?? defaults.typeface.etc,
           },
+          paragraphIndent: normalizeParagraphIndent(p.paragraphIndent),
           accentColor: p.accentColor ?? defaults.accentColor,
           bracket: p.bracket ?? defaults.bracket,
           writingGoal: p.writingGoal ?? defaults.writingGoal,
@@ -206,7 +226,23 @@ type LeafNode = {
   kind: LeafKind;
   textId: string;
   imageId: string;
+  textGroup?: "writing" | "notes";
+  writingBoardIds?: string[];
+  noteBoardIds?: string[];
+  boardNames?: Record<string, string>;
+  writingEntries?: NavigatorEntry[];
+  writingVariants?: WritingVariant[];
+  activeWritingVariantId?: string;
+  noteEntries?: NavigatorEntry[];
+  mainPaneLeafId?: string;
+  mainBoardId?: string;
 };
+
+type NavigatorEntry =
+  | { type: "board"; id: string }
+  | { type: "group"; id: string; name: string; collapsed: boolean; children: string[] };
+
+type WritingVariant = { id: string; name: string; entries: NavigatorEntry[] };
 
 type SplitNode = {
   type: "split";
@@ -244,7 +280,32 @@ function applyTypeTokens(t?: TFTable) {
   if (e?.size) set("--type-e-size", e.size);
 }
 
-type LeafKind = "text" | "image" | "viewer" | "edit";
+function applyParagraphIndentTokens(prefs: PrefsType) {
+  const root = document.documentElement;
+  const context = document.createElement("canvas").getContext("2d");
+  const slots = ["headline", "body", "accent", "etc"] as const;
+  const indent = normalizeParagraphIndent(prefs.paragraphIndent);
+  for (const key of slots) {
+    const font = prefs.typeface[key];
+    const style = String(font.style || "").toLowerCase();
+    const weight = style.includes("black") ? 900
+      : style.includes("extra") && style.includes("bold") ? 800
+      : style.includes("bold") ? 700
+      : style.includes("semibold") || style.includes("demibold") ? 600
+      : style.includes("medium") ? 500
+      : style.includes("light") ? 300
+      : 400;
+    let spaceWidth = Math.max(1, Number(font.size) || 16) * .25 * indent.spaces;
+    if (context) {
+      context.font = `${style.includes("italic") ? "italic " : ""}${weight} ${Number(font.size) || 16}px ${font.name || "system-ui"}`;
+      const measured = context.measureText(" ".repeat(indent.spaces)).width;
+      if (Number.isFinite(measured) && measured > 0) spaceWidth = measured;
+    }
+    root.style.setProperty(`--sw-indent-${key}`, indent[key] ? `${spaceWidth}px` : "0px");
+  }
+}
+
+type LeafKind = "text" | "scenario" | "image" | "viewer" | "edit" | "navigator" | "manuscript";
 
 type ViewerTextItem = { id: string; html: string; preview: string };
 type ViewerState = {
@@ -313,22 +374,467 @@ const uid = (() => {
   return () => String(n++);
 })();
 
-const makeLeaf = (kind: LeafKind): LeafNode => ({
+const makeLeaf = (kind: LeafKind, textGroup?: "writing" | "notes"): LeafNode => ({
   type: "leaf",
   id: uid(),
   kind,
   textId: `T${uid()}`,
   imageId: `I${uid()}`,
+  ...(kind === "text" || kind === "scenario" ? { textGroup: textGroup ?? "writing" } : {}),
 });
 
 function makeInitialTree(): TreeNode {
+  const writing = makeLeaf("text", "writing");
+  const notes = makeLeaf("text", "notes");
+  const navigator = makeLeaf("navigator");
+  navigator.writingBoardIds = [writing.textId];
+  navigator.noteBoardIds = [notes.textId];
+  navigator.writingEntries = [{ type: "board", id: writing.textId }];
+  navigator.writingVariants = [{ id: "main", name: "Main", entries: navigator.writingEntries }];
+  navigator.activeWritingVariantId = "main";
+  navigator.noteEntries = [{ type: "board", id: notes.textId }];
+  navigator.mainPaneLeafId = writing.id;
+  navigator.mainBoardId = writing.textId;
   return {
     type: "split",
     dir: "vertical",
-    ratio: 0.5,
-    a: makeLeaf("text"),
-    b: makeLeaf("image"),
+    ratio: 0.18,
+    a: navigator,
+    b: {
+      type: "split",
+      dir: "vertical",
+      ratio: 0.68,
+      a: writing,
+      b: {
+        type: "split",
+        dir: "horizontal",
+        ratio: 0.5,
+        a: notes,
+        b: makeLeaf("image"),
+      },
+    },
   };
+}
+
+function updateNavigator(root: TreeNode, navigatorId: string, update: (leaf: LeafNode) => LeafNode): TreeNode {
+  if (root.type === "leaf") {
+    if (root.id !== navigatorId) return root;
+    const updated = update(root);
+    const previousActiveId = root.activeWritingVariantId || "main";
+    const nextActiveId = updated.activeWritingVariantId || "main";
+    if (updated.writingEntries && nextActiveId === previousActiveId && updated.writingEntries !== root.writingEntries) {
+      const variants = writingVariantsForLeaf(root).map((variant) => variant.id === nextActiveId
+        ? { ...variant, entries: updated.writingEntries! }
+        : variant);
+      return { ...updated, activeWritingVariantId: nextActiveId, writingVariants: variants };
+    }
+    return updated;
+  }
+  return {
+    ...root,
+    a: updateNavigator(root.a, navigatorId, update),
+    b: updateNavigator(root.b, navigatorId, update),
+  };
+}
+
+function addNavigatorBoard(root: TreeNode, navigatorId: string, group: "writing" | "notes", boardId: string): TreeNode {
+  // Older SWON files may not have persisted Navigator entries yet. Their boards
+  // are still represented by text leaves, so seed the order from those leaves
+  // before appending a new board instead of replacing the legacy fallback list.
+  const legacyBoardIds = collectTextLeaves(root)
+    .filter((item) => group === "writing"
+      ? (item.textGroup ?? "writing") === "writing"
+      : item.textGroup === "notes")
+    .map((item) => item.textId);
+  return updateNavigator(root, navigatorId, (leaf) => {
+    if (group === "writing") {
+      const activeId = leaf.activeWritingVariantId || "main";
+      let currentVariants = writingVariantsForLeaf(leaf);
+      const hasRegisteredBoards = currentVariants.some((variant) => flattenNavigatorBoardIds(variant.entries).length > 0);
+      if (!hasRegisteredBoards && legacyBoardIds.length) {
+        const main = currentVariants.find((variant) => variant.id === "main");
+        const seededMain: WritingVariant = {
+          ...(main || { id: "main", name: "Main", entries: [] }),
+          entries: legacyBoardIds.map((id) => ({ type: "board" as const, id })),
+        };
+        currentVariants = [seededMain, ...currentVariants.filter((variant) => variant.id !== "main")];
+      }
+      const main = currentVariants.find((variant) => variant.id === "main") || currentVariants[0];
+      // Board membership is shared across order variants. Reconcile older or
+      // partially stale variants from Main, preserving each one's existing order
+      // and appending any missing boards at its end.
+      const sharedBoardIds = [...new Set([
+        ...flattenNavigatorBoardIds(main?.entries || []),
+        ...currentVariants.flatMap((variant) => flattenNavigatorBoardIds(variant.entries)),
+        boardId,
+      ])];
+      const variants = currentVariants.map((variant) => {
+        const existingIds = new Set(flattenNavigatorBoardIds(variant.entries));
+        const missing = sharedBoardIds.filter((id) => !existingIds.has(id));
+        return {
+          ...variant,
+          entries: [...variant.entries, ...missing.map((id) => ({ type: "board" as const, id }))],
+        };
+      });
+      const active = variants.find((variant) => variant.id === activeId) || variants[0];
+      const entries = active?.entries || [{ type: "board" as const, id: boardId }];
+      return {
+        ...leaf,
+        writingBoardIds: flattenNavigatorBoardIds(entries),
+        writingEntries: entries,
+        writingVariants: variants,
+        activeWritingVariantId: activeId,
+        ...(leaf.mainBoardId && flattenNavigatorBoardIds(entries).includes(leaf.mainBoardId) ? {} : { mainBoardId: flattenNavigatorBoardIds(entries)[0] }),
+      };
+    }
+    const storedEntries = navigatorEntriesForLeaf(leaf, group);
+    const entries = storedEntries.length || !legacyBoardIds.length
+      ? storedEntries
+      : legacyBoardIds.map((id) => ({ type: "board" as const, id }));
+    const nextEntries = [...entries, { type: "board" as const, id: boardId }];
+    return { ...leaf, noteBoardIds: flattenNavigatorBoardIds(nextEntries), noteEntries: nextEntries };
+  });
+}
+
+function writingVariantsForLeaf(leaf: LeafNode): WritingVariant[] {
+  const variants = leaf.writingVariants?.length
+    ? leaf.writingVariants
+    : [{ id: "main", name: "Main", entries: leaf.writingEntries || (leaf.writingBoardIds || []).map((id) => ({ type: "board" as const, id })) }];
+  const main = variants.find((variant) => variant.id === "main") || variants[0];
+  const sharedBoardIds = [...new Set([
+    ...flattenNavigatorBoardIds(main?.entries || []),
+    ...variants.flatMap((variant) => flattenNavigatorBoardIds(variant.entries)),
+  ])];
+  return variants.map((variant) => {
+    const existingIds = new Set(flattenNavigatorBoardIds(variant.entries));
+    const missing = sharedBoardIds.filter((id) => !existingIds.has(id));
+    return missing.length
+      ? { ...variant, entries: [...variant.entries, ...missing.map((id) => ({ type: "board" as const, id }))] }
+      : variant;
+  });
+}
+
+function navigatorEntriesForLeaf(leaf: LeafNode, group: "writing" | "notes"): NavigatorEntry[] {
+  if (group === "writing") {
+    const variants = writingVariantsForLeaf(leaf);
+    const active = variants.find((variant) => variant.id === (leaf.activeWritingVariantId || "main")) || variants[0];
+    if (active) return active.entries;
+  }
+  const entries = group === "writing" ? leaf.writingEntries : leaf.noteEntries;
+  if (entries) return entries;
+  const ids = group === "writing" ? leaf.writingBoardIds : leaf.noteBoardIds;
+  return (ids || []).map((id) => ({ type: "board", id }));
+}
+
+function createWritingVariant(root: TreeNode, navigatorId: string): { tree: TreeNode; id: string } {
+  let createdId = "";
+  const tree = updateNavigator(root, navigatorId, (leaf) => {
+    const variants = writingVariantsForLeaf(leaf);
+    const main = variants.find((variant) => variant.id === "main") || variants[0];
+    const nextNumber = Math.max(0, ...variants.map((variant) => Number(variant.name.match(/^Draft\s+(\d+)$/i)?.[1] || 0))) + 1;
+    createdId = `draft-${uid()}`;
+    const name = `Draft ${String(nextNumber).padStart(2, "0")}`;
+    const entries = JSON.parse(JSON.stringify(main?.entries || [])) as NavigatorEntry[];
+    const nextVariants = [...variants, { id: createdId, name, entries }];
+    return {
+      ...leaf,
+      writingVariants: nextVariants,
+      activeWritingVariantId: createdId,
+      writingEntries: entries,
+      writingBoardIds: flattenNavigatorBoardIds(entries),
+    };
+  });
+  return { tree, id: createdId };
+}
+
+function selectWritingVariant(root: TreeNode, navigatorId: string, variantId: string): TreeNode {
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const variants = writingVariantsForLeaf(leaf);
+    const selected = variants.find((variant) => variant.id === variantId);
+    if (!selected) return leaf;
+    return {
+      ...leaf,
+      writingVariants: variants,
+      activeWritingVariantId: selected.id,
+      writingEntries: selected.entries,
+      writingBoardIds: flattenNavigatorBoardIds(selected.entries),
+    };
+  });
+}
+
+function renameWritingVariant(root: TreeNode, navigatorId: string, variantId: string, name: string): TreeNode {
+  const trimmed = name.trim();
+  if (!trimmed) return root;
+  return updateNavigator(root, navigatorId, (leaf) => ({
+    ...leaf,
+    writingVariants: writingVariantsForLeaf(leaf).map((variant) => variant.id === variantId ? { ...variant, name: trimmed } : variant),
+  }));
+}
+
+function deleteWritingVariant(root: TreeNode, navigatorId: string, variantId: string): TreeNode {
+  if (variantId === "main") return root;
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const variants = writingVariantsForLeaf(leaf).filter((variant) => variant.id !== variantId);
+    const active = leaf.activeWritingVariantId === variantId
+      ? (variants.find((variant) => variant.id === "main") || variants[0])
+      : variants.find((variant) => variant.id === (leaf.activeWritingVariantId || "main"));
+    return {
+      ...leaf,
+      writingVariants: variants,
+      activeWritingVariantId: active?.id || "main",
+      writingEntries: active?.entries || [],
+      writingBoardIds: flattenNavigatorBoardIds(active?.entries || []),
+    };
+  });
+}
+
+function removeNavigatorBoard(root: TreeNode, navigatorId: string, group: "writing" | "notes", boardId: string): TreeNode {
+  const removeFromEntries = (entries: NavigatorEntry[]) => entries.flatMap<NavigatorEntry>((entry) => {
+    if (entry.type === "board") return entry.id === boardId ? [] : [entry];
+    const children = entry.children.filter((id) => id !== boardId);
+    return children.length ? [{ ...entry, children }] : [];
+  });
+  return updateNavigator(root, navigatorId, (leaf) => {
+    if (group === "writing") {
+      const variants = writingVariantsForLeaf(leaf).map((variant) => ({ ...variant, entries: removeFromEntries(variant.entries) }));
+      const active = variants.find((variant) => variant.id === (leaf.activeWritingVariantId || "main")) || variants[0];
+      const ids = flattenNavigatorBoardIds(active?.entries || []);
+      return {
+        ...leaf,
+        writingVariants: variants,
+        writingEntries: active?.entries || [],
+        activeWritingVariantId: active?.id || "main",
+        writingBoardIds: ids,
+        ...(leaf.mainBoardId === boardId ? { mainBoardId: ids[0] } : {}),
+      };
+    }
+    const entries = removeFromEntries(navigatorEntriesForLeaf(leaf, "notes"));
+    return { ...leaf, noteEntries: entries, noteBoardIds: flattenNavigatorBoardIds(entries) };
+  });
+}
+
+function reorderWritingVariant(root: TreeNode, navigatorId: string, sourceId: string, targetId: string, position: "before" | "after"): TreeNode {
+  if (sourceId === targetId || sourceId === "main" || targetId === "main") return root;
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const variants = writingVariantsForLeaf(leaf);
+    const sourceIndex = variants.findIndex((variant) => variant.id === sourceId);
+    const targetIndex = variants.findIndex((variant) => variant.id === targetId);
+    if (sourceIndex <= 0 || targetIndex <= 0) return leaf;
+    const next = [...variants];
+    const [source] = next.splice(sourceIndex, 1);
+    const adjustedTargetIndex = next.findIndex((variant) => variant.id === targetId);
+    const insertAt = adjustedTargetIndex + (position === "after" ? 1 : 0);
+    next.splice(insertAt, 0, source);
+    return { ...leaf, writingVariants: next };
+  });
+}
+
+function flattenNavigatorBoardIds(entries: NavigatorEntry[]): string[] {
+  return entries.flatMap((entry) => entry.type === "board" ? [entry.id] : entry.children);
+}
+
+function moveNavigatorBoard(
+  root: TreeNode,
+  navigatorId: string,
+  boardId: string,
+  sourceGroup: "writing" | "notes",
+  targetGroup: "writing" | "notes",
+  targetId: string | null,
+  targetParentGroupId: string | null,
+  position: "before" | "after",
+): TreeNode {
+  if (targetId === boardId) return root;
+  return updateNavigator(root, navigatorId, (leaf) => {
+    let sourceEntries = navigatorEntriesForLeaf(leaf, sourceGroup);
+    let found = false;
+    sourceEntries = sourceEntries.flatMap<NavigatorEntry>((entry) => {
+      if (entry.type === "board") {
+        if (entry.id === boardId) { found = true; return []; }
+        return [entry];
+      }
+      const children = entry.children.filter((id) => {
+        if (id === boardId) { found = true; return false; }
+        return true;
+      });
+      return children.length ? [{ ...entry, children }] : [];
+    });
+    if (!found) return leaf;
+
+    let targetEntries = sourceGroup === targetGroup
+      ? sourceEntries
+      : navigatorEntriesForLeaf(leaf, targetGroup);
+    const moved: NavigatorEntry = { type: "board", id: boardId };
+    let inserted = false;
+    if (targetParentGroupId) {
+      targetEntries = targetEntries.map((entry) => {
+        if (entry.type !== "group" || entry.id !== targetParentGroupId) return entry;
+        const index = targetId ? entry.children.indexOf(targetId) : -1;
+        const insertAt = index < 0 ? entry.children.length : index + (position === "after" ? 1 : 0);
+        const children = [...entry.children];
+        children.splice(insertAt, 0, boardId);
+        inserted = true;
+        return { ...entry, children, collapsed: false };
+      });
+    } else {
+      let insertAt = targetId ? targetEntries.findIndex((entry) => entry.id === targetId) : -1;
+      if (insertAt < 0) insertAt = targetEntries.length;
+      else if (position === "after") insertAt += 1;
+      targetEntries = [...targetEntries];
+      targetEntries.splice(insertAt, 0, moved);
+      inserted = true;
+    }
+    if (!inserted) return leaf;
+
+    const sourceIds = sourceGroup === targetGroup ? flattenNavigatorBoardIds(targetEntries) : flattenNavigatorBoardIds(sourceEntries);
+    const targetIds = sourceGroup === targetGroup ? sourceIds : flattenNavigatorBoardIds(targetEntries);
+    let nextLeaf = sourceGroup === targetGroup
+      ? sourceGroup === "writing"
+        ? { ...leaf, writingEntries: targetEntries, writingBoardIds: targetIds }
+        : { ...leaf, noteEntries: targetEntries, noteBoardIds: targetIds }
+      : {
+          ...leaf,
+          writingEntries: sourceGroup === "writing" ? sourceEntries : targetEntries,
+          noteEntries: sourceGroup === "notes" ? sourceEntries : targetEntries,
+          writingBoardIds: sourceGroup === "writing" ? sourceIds : targetIds,
+          noteBoardIds: sourceGroup === "notes" ? sourceIds : targetIds,
+        };
+    if (sourceGroup !== targetGroup) {
+      const activeId = leaf.activeWritingVariantId || "main";
+      const variants = writingVariantsForLeaf(leaf).map((variant) => {
+        let entries: NavigatorEntry[] = variant.entries.flatMap<NavigatorEntry>((entry) => {
+          if (entry.type === "board") return entry.id === boardId ? [] : [entry];
+          const children = entry.children.filter((id) => id !== boardId);
+          return children.length ? [{ ...entry, children }] : [];
+        });
+        if (targetGroup === "writing") {
+          entries = variant.id === activeId
+            ? targetEntries
+            : [...entries, { type: "board" as const, id: boardId }];
+        }
+        return { ...variant, entries };
+      });
+      const active = variants.find((variant) => variant.id === activeId) || variants[0];
+      nextLeaf = {
+        ...nextLeaf,
+        writingVariants: variants,
+        activeWritingVariantId: activeId,
+        writingEntries: active?.entries || [],
+        writingBoardIds: flattenNavigatorBoardIds(active?.entries || []),
+      };
+    }
+    return nextLeaf;
+  });
+}
+
+function setTextBoardGroup(root: TreeNode, boardId: string, group: "writing" | "notes"): TreeNode {
+  if (root.type === "leaf") {
+    return root.kind === "text" && root.textId === boardId ? { ...root, textGroup: group } : root;
+  }
+  return { ...root, a: setTextBoardGroup(root.a, boardId, group), b: setTextBoardGroup(root.b, boardId, group) };
+}
+
+function groupNavigatorBoards(root: TreeNode, navigatorId: string, group: "writing" | "notes", selectedIds: string[], groupId: string, groupName: string): TreeNode {
+  if (selectedIds.length < 1) return root;
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const entries = navigatorEntriesForLeaf(leaf, group);
+    const selected = new Set(selectedIds);
+    const selectedEntries = entries.filter((entry) => entry.type === "board" && selected.has(entry.id));
+    if (selectedEntries.length !== selectedIds.length || selectedEntries.length < 1) return leaf;
+    const firstIndex = entries.findIndex((entry) => entry.type === "board" && selected.has(entry.id));
+    const groupEntry: NavigatorEntry = {
+      type: "group", id: groupId, name: groupName,
+      collapsed: false, children: selectedEntries.map((entry) => entry.id),
+    };
+    const nextEntries: NavigatorEntry[] = [];
+    entries.forEach((entry, index) => {
+      if (index === firstIndex) nextEntries.push(groupEntry);
+      if (entry.type === "board" && selected.has(entry.id)) return;
+      nextEntries.push(entry);
+    });
+    const ids = flattenNavigatorBoardIds(nextEntries);
+    return group === "writing"
+      ? { ...leaf, writingBoardIds: ids, writingEntries: nextEntries }
+      : { ...leaf, noteBoardIds: ids, noteEntries: nextEntries };
+  });
+}
+
+function ungroupNavigatorGroups(root: TreeNode, navigatorId: string, group: "writing" | "notes", selectedIds: string[]): { tree: TreeNode; expandedIds: string[] } {
+  let expandedIds: string[] = [];
+  const selected = new Set(selectedIds);
+  const tree = updateNavigator(root, navigatorId, (leaf) => {
+    const entries = navigatorEntriesForLeaf(leaf, group);
+    const nextEntries: NavigatorEntry[] = [];
+    entries.forEach((entry) => {
+      if (entry.type === "group" && selected.has(entry.id)) {
+        expandedIds.push(...entry.children);
+        nextEntries.push(...entry.children.map((id) => ({ type: "board" as const, id })));
+      } else nextEntries.push(entry);
+    });
+    const ids = flattenNavigatorBoardIds(nextEntries);
+    return group === "writing"
+      ? { ...leaf, writingBoardIds: ids, writingEntries: nextEntries }
+      : { ...leaf, noteBoardIds: ids, noteEntries: nextEntries };
+  });
+  return { tree, expandedIds };
+}
+
+function toggleNavigatorGroup(root: TreeNode, navigatorId: string, group: "writing" | "notes", groupId: string): TreeNode {
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const entries = navigatorEntriesForLeaf(leaf, group);
+    const nextEntries = entries.map((entry) => entry.type === "group" && entry.id === groupId
+      ? { ...entry, collapsed: !entry.collapsed } : entry);
+    return group === "writing" ? { ...leaf, writingEntries: nextEntries } : { ...leaf, noteEntries: nextEntries };
+  });
+}
+
+function renameNavigatorGroup(root: TreeNode, navigatorId: string, group: "writing" | "notes", groupId: string, name: string): TreeNode {
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const entries = navigatorEntriesForLeaf(leaf, group);
+    const nextEntries = entries.map((entry) => entry.type === "group" && entry.id === groupId
+      ? { ...entry, name: name || entry.name } : entry);
+    return group === "writing" ? { ...leaf, writingEntries: nextEntries } : { ...leaf, noteEntries: nextEntries };
+  });
+}
+
+function setNavigatorBoardName(root: TreeNode, navigatorId: string, boardId: string, name: string): TreeNode {
+  return updateNavigator(root, navigatorId, (leaf) => {
+    const boardNames = { ...(leaf.boardNames || {}) };
+    if (name) boardNames[boardId] = name;
+    else delete boardNames[boardId];
+    return { ...leaf, boardNames };
+  });
+}
+
+function retargetGroupTextBoard(root: TreeNode, group: "writing" | "notes", boardId: string): TreeNode {
+  let retargeted = false;
+  const walk = (node: TreeNode): TreeNode => {
+    if (node.type === "leaf") {
+      if (!retargeted && node.kind === "text" && (node.textGroup ?? "writing") === group) {
+        retargeted = true;
+        return { ...node, textId: boardId };
+      }
+      return node;
+    }
+    return { ...node, a: walk(node.a), b: walk(node.b) };
+  };
+  return walk(root);
+}
+
+function toggleManuscriptView(root: TreeNode, navigatorId: string): TreeNode {
+  if (root.type !== "split") return root;
+  const left = root.a;
+  if (left.type === "leaf" && left.id === navigatorId) {
+    return {
+      ...root,
+      ratio: 0.42,
+      a: { type: "split", dir: "vertical", ratio: 0.42, a: left, b: makeLeaf("manuscript") },
+    };
+  }
+  if (left.type === "split" && left.a.type === "leaf" && left.a.id === navigatorId &&
+      left.b.type === "leaf" && left.b.kind === "manuscript") {
+    return { ...root, ratio: 0.18, a: left.a };
+  }
+  return root;
 }
 
 function updateRatioByPath(root: TreeNode, path: number[], next: number): TreeNode {
@@ -396,6 +902,78 @@ function findLeaf(n: TreeNode, id: string): LeafNode | undefined {
   return findLeaf(n.a, id) ?? findLeaf(n.b, id);
 }
 
+function swapLeafPositions(root: TreeNode, firstId: string, secondId: string): TreeNode {
+  if (firstId === secondId) return root;
+  const first = findLeaf(root, firstId);
+  const second = findLeaf(root, secondId);
+  if (!first || !second) return root;
+  const walk = (node: TreeNode): TreeNode => {
+    if (node.type === "leaf") {
+      if (node.id === firstId) return second;
+      if (node.id === secondId) return first;
+      return node;
+    }
+    return { ...node, a: walk(node.a), b: walk(node.b) };
+  };
+  return walk(root);
+}
+
+function collectTextLeaves(n: TreeNode, out: LeafNode[] = []): LeafNode[] {
+  if (n.type === "leaf") {
+    if (n.kind === "text") out.push(n);
+    return out;
+  }
+  collectTextLeaves(n.a, out);
+  collectTextLeaves(n.b, out);
+  return out;
+}
+
+function findNavigatorLeaf(n: TreeNode): LeafNode | undefined {
+  if (n.type === "leaf") return n.kind === "navigator" ? n : undefined;
+  return findNavigatorLeaf(n.a) ?? findNavigatorLeaf(n.b);
+}
+
+function allocateTextBoardId(
+  root: TreeNode,
+  openText: Record<string, string>,
+  archivedText: Record<string, string>,
+  nextUid: () => string,
+): string {
+  const used = new Set<string>([
+    ...Object.keys(openText || {}),
+    ...Object.keys(archivedText || {}),
+  ]);
+  const visit = (node: TreeNode) => {
+    if (node.type === "split") {
+      visit(node.a);
+      visit(node.b);
+      return;
+    }
+    if (node.textId) used.add(node.textId);
+    for (const id of [...(node.writingBoardIds || []), ...(node.noteBoardIds || [])]) used.add(id);
+    for (const id of Object.keys(node.boardNames || {})) used.add(id);
+    const collectEntries = (entries?: NavigatorEntry[]) => {
+      for (const entry of entries || []) {
+        if (entry.type === "board") used.add(entry.id);
+        else for (const id of entry.children) used.add(id);
+      }
+    };
+    collectEntries(node.writingEntries);
+    collectEntries(node.noteEntries);
+    for (const variant of node.writingVariants || []) collectEntries(variant.entries);
+  };
+  visit(root);
+
+  let id = "";
+  do { id = `T${nextUid()}`; } while (used.has(id));
+  return id;
+}
+
+function containsLeafKind(n: TreeNode, kind: LeafKind): boolean {
+  if (n.type === "leaf") return n.kind === kind;
+  return containsLeafKind(n.a, kind) || containsLeafKind(n.b, kind);
+}
+
 function changeKind(root: TreeNode, leafId: string, next: LeafKind): TreeNode {
   const walk = (n: TreeNode): TreeNode => {
     if (n.type === "leaf") return n.id === leafId ? { ...n, kind: next } : n;
@@ -404,9 +982,12 @@ function changeKind(root: TreeNode, leafId: string, next: LeafKind): TreeNode {
   return walk(root);
 }
 
-function splitLeaf(root: TreeNode, leafId: string, dir: "horizontal" | "vertical"): TreeNode {
+function splitLeaf(root: TreeNode, leafId: string, dir: "horizontal" | "vertical", newTextId?: string): TreeNode {
   const makeSplit = (leaf: LeafNode): SplitNode => ({
-    type: "split", dir, ratio: 0.5, a: leaf, b: makeLeaf(leaf.kind),
+    type: "split", dir, ratio: 0.5, a: leaf,
+    b: leaf.kind === "text"
+      ? { ...makeLeaf("text", "notes"), ...(newTextId ? { textId: newTextId } : {}) }
+      : makeLeaf(leaf.kind, leaf.textGroup),
   });
   const walk = (n: TreeNode): TreeNode => {
     if (n.type === "leaf") return n.id === leafId ? makeSplit(n) : n;
@@ -417,10 +998,24 @@ function splitLeaf(root: TreeNode, leafId: string, dir: "horizontal" | "vertical
 
 function replaceLeafWithNew(root: TreeNode, leafId: string, kind: LeafKind): TreeNode {
   const walk = (n: TreeNode): TreeNode => {
-    if (n.type === "leaf") return n.id === leafId ? makeLeaf(kind) : n;
+    if (n.type === "leaf") return n.id === leafId ? { ...makeLeaf(kind), id: n.id } : n;
     return { ...n, a: walk(n.a), b: walk(n.b) };
   };
   return walk(root);
+}
+
+function changeTextBoardKind(root: TreeNode, leafId: string, kind: "text"): TreeNode {
+  if (root.type === "leaf") {
+    if (root.id !== leafId) return root;
+    if (root.kind === "text" || root.kind === "scenario") return { ...root, kind };
+    const replacement = makeLeaf(kind, "writing");
+    return { ...replacement, id: root.id, textId: root.textId };
+  }
+  return {
+    ...root,
+    a: changeTextBoardKind(root.a, leafId, kind),
+    b: changeTextBoardKind(root.b, leafId, kind),
+  };
 }
 
 function removeLeaf(root: TreeNode, leafId: string): TreeNode {
@@ -442,6 +1037,18 @@ function retargetLeafTextId(root: TreeNode, leafId: string, newTextId: string): 
     n.type === "leaf"
       ? (n.id === leafId ? { ...n, textId: newTextId } : n)
       : { ...n, a: walk(n.a), b: walk(n.b) };
+  return walk(root);
+}
+
+function retargetLeafAsText(
+  root: TreeNode,
+  leafId: string,
+  textId: string,
+  textGroup: "writing" | "notes",
+): TreeNode {
+  const walk = (node: TreeNode): TreeNode => node.type === "leaf"
+    ? node.id === leafId ? { ...node, kind: "text", textId, textGroup } : node
+    : { ...node, a: walk(node.a), b: walk(node.b) };
   return walk(root);
 }
 
@@ -533,6 +1140,10 @@ function setSelectionByOffsets(root: HTMLElement, start: number, end: number) {
 
 export default function MainUI() {
   const [tree, setTree] = useState<TreeNode>(makeInitialTree());
+  const [activeNavigatorTextId, setActiveNavigatorTextId] = useState<string | null>(null);
+  const [activeTextLeafId, setActiveTextLeafId] = useState<string | null>(null);
+  const [selectedNavigatorBoardIds, setSelectedNavigatorBoardIds] = useState<string[]>([]);
+  const navigatorSelectionAnchorRef = React.useRef<string | null>(null);
 
   const TITLEBAR_H = 36;
   const TOPBAR_H = 32;
@@ -557,11 +1168,12 @@ export default function MainUI() {
 
 // 3-button confirm state
 type Ask3Choice = "save" | "discard" | "cancel";
-const [ask3State, setAsk3State] = React.useState<{open:boolean; msg:string; resolve?(v:Ask3Choice):void}>({open:false, msg:""});
+type Ask3Labels = { save: string; discard: string; cancel: string };
+const [ask3State, setAsk3State] = React.useState<{open:boolean; msg:string; labels?: Ask3Labels; resolve?(v:Ask3Choice):void}>({open:false, msg:""});
 
-const ask3 = React.useCallback((msg: string) => {
+const ask3 = React.useCallback((msg: string, labels?: Ask3Labels) => {
   return new Promise<Ask3Choice>((resolve) => {
-    setAsk3State({ open: true, msg, resolve });
+    setAsk3State({ open: true, msg, labels, resolve });
   });
 }, []);
 
@@ -735,17 +1347,33 @@ const applySnap = (s: HistorySnap) => {
     try { localStorage.removeItem("splitwriter:accentColor"); } catch {}
   }, []);
 
-  // JSON board picker
-  const [boardPicker, setBoardPicker] = useState<{ open: boolean; targetLeafId?: string }>({
-    open: false,
-  });
-
   // hoisted split handler
   function handleRequestSplit(leafId: string, dir: "horizontal" | "vertical") {
     flushOpenEditorsToStore();
-    setTree(prev => splitLeaf(prev, leafId, dir));
+    const source = findLeaf(treeRef.current, leafId);
+    const newTextId = source?.kind === "text"
+      ? allocateTextBoardId(treeRef.current, boardHTMLRef.current, archivedTextRef.current, uid)
+      : undefined;
+    setTree(prev => {
+      let next = splitLeaf(prev, leafId, dir, newTextId);
+      if (newTextId) {
+        const navigator = findNavigatorLeaf(next);
+        if (navigator) next = addNavigatorBoard(next, navigator.id, "notes", newTextId);
+      }
+      return next;
+    });
     io.markDirty();
+    if (newTextId) io.notify("Note board created.", "info", 1600);
     pushHistory("split");
+  }
+
+  function handleSwapPanes(sourceLeafId: string, targetLeafId: string) {
+    if (!sourceLeafId || !targetLeafId || sourceLeafId === targetLeafId) return;
+    flushOpenEditorsToStore();
+    setTree((previous) => swapLeafPositions(previous, sourceLeafId, targetLeafId));
+    setSwapTargetLeafId(null);
+    io.markDirty();
+    pushHistory("swap-panes");
   }
 
   // 현재 열려 있는 SWON 파일 경로를 전역에서 읽어오는 헬퍼
@@ -791,10 +1419,6 @@ const applySnap = (s: HistorySnap) => {
     const raw = (div.textContent || "").replace(/\u00A0/g, " ").trim();
     const line = raw.split(/\r?\n/)[0] || "";
     return line.length > max ? line.slice(0, max - 1) + "…" : line;
-  }
-
-  function openBoardPickerFor(leafId: string) {
-    setBoardPicker({ open: true, targetLeafId: leafId });
   }
 
   const [activePreset, setActivePreset] = useState<number>(2);
@@ -949,6 +1573,10 @@ const applySnap = (s: HistorySnap) => {
     applyTypeTokens(tfTable || undefined);
   }, [ (prefs as any)?.typefaces, (prefs as any)?.typeface ]);
 
+  React.useEffect(() => {
+    applyParagraphIndentTokens(prefs);
+  }, [prefs.paragraphIndent, prefs.typeface]);
+
   const pushImageHistory = React.useCallback((imageId: string, next: string | null) => {
     const H = imageHistRef.current[imageId] ?? { stack: [], idx: -1, cap: 50 };
     const base = H.stack.slice(0, H.idx + 1);
@@ -1011,6 +1639,8 @@ const applySnap = (s: HistorySnap) => {
 
   const treeRef = React.useRef(tree);
   React.useEffect(() => { treeRef.current = tree; }, [tree]);
+  const windowStateRef = React.useRef<SwonWindowState | undefined>(undefined);
+  const suppressWindowDirtyUntilRef = React.useRef(0);
 
   const archivedTextRef = React.useRef(archivedText);
   React.useEffect(() => { archivedTextRef.current = archivedText; }, [archivedText]);
@@ -1116,11 +1746,89 @@ const applySnap = (s: HistorySnap) => {
       });
     },
 
+    getWindowState: () => windowStateRef.current,
+    setWindowState: (state) => {
+      if (!(window as any).__TAURI_IPC__) return;
+      suppressWindowDirtyUntilRef.current = Date.now() + 1800;
+      windowStateRef.current = state;
+      void (async () => {
+        try {
+          const { appWindow, LogicalPosition, LogicalSize } = await import("@tauri-apps/api/window");
+          if (await appWindow.isMaximized()) await appWindow.unmaximize();
+          const screen = window.screen;
+          const left = Number((screen as any).availLeft ?? 0);
+          const top = Number((screen as any).availTop ?? 0);
+          const rightLimit = left + Math.max(0, screen.availWidth - 160);
+          const bottomLimit = top + Math.max(0, screen.availHeight - 64);
+          const x = Math.round(Math.min(Math.max(state.x, left), rightLimit));
+          const y = Math.round(Math.min(Math.max(state.y, top), bottomLimit));
+          await appWindow.setSize(new LogicalSize(Math.max(900, state.width), Math.max(600, state.height)));
+          await appWindow.setPosition(new LogicalPosition(x, y));
+          if (state.maximized) await appWindow.maximize();
+        } catch (error) {
+          console.warn("[swon] failed to restore window bounds", error);
+        }
+      })();
+    },
+
     getEchoBg: () => (window as any).__SW_ECHO_BG__ ?? null,
     makeFreshTree: () => makeInitialTree(),
     bumpSession: () => setSessionKey(x => x + 1),
     notify: notifyImpl,
   }), [notifyImpl]);
+
+  React.useEffect(() => {
+    if (!(window as any).__TAURI_IPC__) return;
+    let disposed = false;
+    let timer: number | undefined;
+    let unlistenResize: (() => void) | undefined;
+    let unlistenMove: (() => void) | undefined;
+
+    const capture = async (markDirty: boolean) => {
+      try {
+        const { appWindow } = await import("@tauri-apps/api/window");
+        const maximized = await appWindow.isMaximized();
+        const previous = windowStateRef.current;
+        const next: SwonWindowState = maximized && previous
+          ? { ...previous, maximized: true }
+          : {
+              x: Math.round(window.screenX),
+              y: Math.round(window.screenY),
+              width: Math.round(window.outerWidth || window.innerWidth),
+              height: Math.round(window.outerHeight || window.innerHeight),
+              maximized,
+            };
+        if (disposed) return;
+        const changed = JSON.stringify(previous) !== JSON.stringify(next);
+        windowStateRef.current = next;
+        if (markDirty && changed && Date.now() >= suppressWindowDirtyUntilRef.current) io.markDirty();
+      } catch {
+        // Window geometry is optional outside supported Tauri desktop builds.
+      }
+    };
+    const scheduleCapture = () => {
+      if (timer !== undefined) window.clearTimeout(timer);
+      timer = window.setTimeout(() => { void capture(true); }, 250);
+    };
+
+    void (async () => {
+      try {
+        const { appWindow } = await import("@tauri-apps/api/window");
+        await capture(false);
+        unlistenResize = await appWindow.onResized(scheduleCapture);
+        unlistenMove = await appWindow.onMoved(scheduleCapture);
+      } catch {
+        // Web preview has no native window bounds API.
+      }
+    })();
+
+    return () => {
+      disposed = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+      unlistenResize?.();
+      unlistenMove?.();
+    };
+  }, [io]);
 
   // (dev note removed)
   React.useEffect(() => {
@@ -1139,6 +1847,79 @@ const applySnap = (s: HistorySnap) => {
 
   const hasBoundFileRef = React.useRef(false);
   const autosaveWarnedRef = React.useRef(false);
+  const autosaveOverrideForFileRef = React.useRef<boolean | null>(null);
+  const autosaveOverrideBeforeOpenRef = React.useRef<boolean | null>(null);
+  const [autosaveSessionOverride, setAutosaveSessionOverride] = React.useState<boolean | null>(null);
+
+  React.useEffect(() => {
+    const onOpening = () => {
+      autosaveOverrideBeforeOpenRef.current = autosaveOverrideForFileRef.current;
+      autosaveOverrideForFileRef.current = false;
+      setAutosaveSessionOverride(false);
+    };
+    const onOpened = () => {
+      autosaveOverrideForFileRef.current = false;
+      setAutosaveSessionOverride(false);
+      window.dispatchEvent(new CustomEvent("sw:status", {
+        detail: {
+          text: "Autosave is paused for this file.",
+          actionLabel: "Enable autosave",
+          actionEvent: "sw:autosave:enable-for-file",
+          persistent: true,
+        },
+      }));
+    };
+    const onCancelled = () => {
+      autosaveOverrideForFileRef.current = autosaveOverrideBeforeOpenRef.current;
+      setAutosaveSessionOverride(autosaveOverrideBeforeOpenRef.current);
+      autosaveOverrideBeforeOpenRef.current = null;
+    };
+    const onCleared = () => {
+      autosaveOverrideForFileRef.current = null;
+      setAutosaveSessionOverride(null);
+      autosaveOverrideBeforeOpenRef.current = null;
+    };
+    const onEnable = () => {
+      autosaveOverrideForFileRef.current = true;
+      setAutosaveSessionOverride(true);
+      window.dispatchEvent(new Event("sw:status:clear-persistent"));
+      window.dispatchEvent(new CustomEvent("sw:status", {
+        detail: { text: "Autosave enabled for this file.", level: "info" },
+      }));
+    };
+    const onToggleForFile = (event: Event) => {
+      const enabled = !!(event as CustomEvent<{ enabled?: boolean }>).detail?.enabled;
+      autosaveOverrideForFileRef.current = enabled;
+      setAutosaveSessionOverride(enabled);
+      if (enabled) {
+        window.dispatchEvent(new Event("sw:status:clear-persistent"));
+      } else {
+        window.dispatchEvent(new CustomEvent("sw:status", {
+          detail: {
+            text: "Autosave is paused for this file.",
+            actionLabel: "Enable autosave",
+            actionEvent: "sw:autosave:enable-for-file",
+            persistent: true,
+          },
+        }));
+      }
+    };
+
+    window.addEventListener("sw:project:opening", onOpening);
+    window.addEventListener("sw:project:opened", onOpened);
+    window.addEventListener("sw:project:open-cancelled", onCancelled);
+    window.addEventListener("sw:file:cleared", onCleared);
+    window.addEventListener("sw:autosave:enable-for-file", onEnable);
+    window.addEventListener("sw:autosave:toggle-for-file", onToggleForFile);
+    return () => {
+      window.removeEventListener("sw:project:opening", onOpening);
+      window.removeEventListener("sw:project:opened", onOpened);
+      window.removeEventListener("sw:project:open-cancelled", onCancelled);
+      window.removeEventListener("sw:file:cleared", onCleared);
+      window.removeEventListener("sw:autosave:enable-for-file", onEnable);
+      window.removeEventListener("sw:autosave:toggle-for-file", onToggleForFile);
+    };
+  }, []);
 
   // ★ 파일명 표시 리셋
   function clearCurrentFileLabel() {
@@ -1184,14 +1965,19 @@ const applySnap = (s: HistorySnap) => {
 
   async function readLocalPrefsFile(): Promise<PrefsType | null> {
     if (!(window as any).__TAURI_IPC__) return null;
-    const { exists, readTextFile } = await import("@tauri-apps/api/fs");
+    const { exists, readTextFile, writeTextFile } = await import("@tauri-apps/api/fs");
     const p = await getLocalPrefsPath();
     if (!p) return null;
     try {
       if (!(await exists(p.file))) return null;
       const raw = await readTextFile(p.file);
       const obj = JSON.parse(raw);
-      return whitelistPrefsMerge(DEFAULT_PREFS, obj);
+      const normalized = whitelistPrefsMerge(DEFAULT_PREFS, obj);
+      // Upgrade older preference files with newly added options and discard stale keys.
+      if (!prefsMatchCurrentSchema(obj, normalized)) {
+        await writeTextFile(p.file, JSON.stringify(normalized, null, 2));
+      }
+      return normalized;
     } catch {
       return null;
     }
@@ -1219,7 +2005,12 @@ const applySnap = (s: HistorySnap) => {
       }
       const raw = await readTextFile(file);
       const parsed = JSON.parse(raw);
-      return whitelistPrefsMerge(DEFAULT_PREFS, parsed);
+      const normalized = whitelistPrefsMerge(DEFAULT_PREFS, parsed);
+      // Keep the startup/default file in sync with the current preference schema.
+      if (!prefsMatchCurrentSchema(parsed, normalized)) {
+        await writeTextFile(file, JSON.stringify(normalized, null, 2));
+      }
+      return normalized;
     } catch (e) {
       console.error(e);
       return null;
@@ -1258,35 +2049,75 @@ const applySnap = (s: HistorySnap) => {
   }
 
   async function duplicateImageToProject(imageId: string) {
-    const baseDir = await getProjectDirNow();
-    if (!baseDir) { io.notify("Save this project as a .swon first to duplicate images."); return; }
+    try {
+      const baseDir = await getProjectDirNow();
+      if (!baseDir) { io.notify("Save this project as a .swon first to duplicate images.", "warn", 1800); return; }
 
-    const abs    = imagePathsRef.current?.[imageId];
-    const srcUrl = imageDocsRef.current?.[imageId]?.src || null;
-    if (!abs && !srcUrl) { io.notify("No image to duplicate.", "warn", 1600); return; }
+      const abs = imagePathsRef.current?.[imageId] || null;
+      const srcUrl = imageDocsRef.current?.[imageId]?.src || null;
+      if (!abs && !srcUrl) { io.notify("No image to duplicate.", "warn", 1600); return; }
 
-    const isTauri = !!(window as any).__TAURI_IPC__;
-    if (!isTauri) { io.notify("Available only in desktop build.", "warn", 1600); return; }
+      if (!(window as any).__TAURI_IPC__) {
+        io.notify("Available only in desktop build.", "warn", 1600);
+        return;
+      }
 
-    const [{ readBinaryFile, writeBinaryFile, createDir, exists }, { join, basename }] =
-      await Promise.all([import("@tauri-apps/api/fs"), import("@tauri-apps/api/path")]);
+      const [{ readBinaryFile, writeBinaryFile, createDir, exists, removeFile }, { join, basename }] =
+        await Promise.all([import("@tauri-apps/api/fs"), import("@tauri-apps/api/path")]);
 
-    const imgName = abs ? await basename(abs) : `image_${Date.now()}.bin`;
-    const outDir  = await join(baseDir, "_image");     // ← 핵심: baseDir 사용
-    const outPath = await join(outDir, imgName);
-    if (!(await exists(outDir))) await createDir(outDir, { recursive: true });
+      const outDir = await join(baseDir, "_image");
+      if (!(await exists(outDir))) await createDir(outDir, { recursive: true });
 
-    let bytes: Uint8Array;
-    if (abs) {
-      bytes = await readBinaryFile(abs);
-    } else {
-      const res = await fetch(srcUrl as string);
-      bytes = new Uint8Array(await res.arrayBuffer());
+      let bytes: Uint8Array;
+      let mimeType = "";
+      if (abs) {
+        bytes = await readBinaryFile(abs);
+      } else {
+        const res = await fetch(srcUrl as string);
+        if (!res.ok) throw new Error(`Image fetch failed (${res.status})`);
+        mimeType = res.headers.get("content-type") || "";
+        bytes = new Uint8Array(await res.arrayBuffer());
+      }
+
+      const extensionForMime: Record<string, string> = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp",
+        "image/gif": ".gif", "image/bmp": ".bmp", "image/svg+xml": ".svg",
+      };
+      const sourceHasNoFilePath = !abs && /^(?:data|blob):/i.test(srcUrl || "");
+      const pathName = (abs || (sourceHasNoFilePath ? "" : srcUrl) || "")
+        .split(/[?#]/, 1)[0]
+        .replace(/\\/g, "/")
+        .split("/")
+        .pop() || "";
+      let originalName = abs ? await basename(abs) : pathName;
+      try { originalName = decodeURIComponent(originalName); } catch { /* keep original name */ }
+      const match = originalName.match(/^(.*?)(\.[^.]+)?$/);
+      const extFromName = match?.[2] || "";
+      const extension = extFromName || extensionForMime[mimeType.split(";", 1)[0].trim().toLowerCase()] || ".bin";
+      const stem = (match?.[1] || "image").trim() || "image";
+      const safeStem = stem.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_") || "image";
+
+      // Never overwrite an existing image: other boards may already reference it.
+      let imgName = `${safeStem}${extension}`;
+      let outPath = await join(outDir, imgName);
+      let suffix = 2;
+      while (await exists(outPath)) {
+        imgName = `${safeStem} (${suffix++})${extension}`;
+        outPath = await join(outDir, imgName);
+      }
+
+      await writeBinaryFile(outPath, bytes);
+      const applied = await applyImageFromAbsPath(imageId, outPath);
+      if (!applied) {
+        try { await removeFile(outPath); } catch { /* keep the copied file if cleanup is unavailable */ }
+        io.notify("The image was copied, but this board could not be updated.", "error", 2200);
+        return;
+      }
+      io.notify(`Image copied to the '_image' folder.\n${imgName}`, "info", 2200);
+    } catch (error) {
+      console.error("Duplicate image failed:", error);
+      io.notify("Could not copy the image to the project folder.", "error", 2200);
     }
-    await writeBinaryFile(outPath, bytes);
-
-    await applyImageFromAbsPath(imageId, outPath);
-    io.notify(`Image duplicated to the '_image' folder.\n${imgName}`, "info", 2200);
   }
 
   async function getProjectDirNow(): Promise<string | null> {
@@ -1429,7 +2260,7 @@ const applySnap = (s: HistorySnap) => {
       for (const tid of textIds) {
         const leaves = findLeavesByTextId(treeRef.current, tid);
         if (leaves.length) {
-          const newId = `T${(Math.random() * 1e9 >>> 0)}`;
+          const newId = allocateTextBoardId(treeRef.current, boardHTMLRef.current, archivedTextRef.current, uid);
           boardHTMLRef.current[newId] = "";
           setTree(t => {
             let r = t;
@@ -1445,9 +2276,55 @@ const applySnap = (s: HistorySnap) => {
       setSessionKey(k => k + 1);
       emitEditState();
       pushHistory("deleteBoards");
+      io.notify(textIds.length === 1 ? "Text board deleted." : `${textIds.length} text boards deleted.`, "info", 1600);
     },
     [emitEditState, io, setTree]
   );
+
+  const handleNavigatorDeleteBoard = React.useCallback((boardId: string, group: "writing" | "notes") => {
+    flushOpenEditorsToStore();
+    const currentTree = treeRef.current;
+    const navigator = findNavigatorLeaf(currentTree);
+    if (!navigator) return;
+    const openLeafIds = findLeavesByTextId(currentTree, boardId);
+    const openTextIds = new Set(collectTextLeaves(currentTree).map((leaf) => leaf.textId));
+    let nextTree = removeNavigatorBoard(currentTree, navigator.id, group, boardId);
+    let nextNavigator = findNavigatorLeaf(nextTree);
+    let remainingIds = nextNavigator
+      ? flattenNavigatorBoardIds(navigatorEntriesForLeaf(nextNavigator, group))
+      : [];
+    let replacementId = remainingIds.find((id) => !openTextIds.has(id));
+
+    // Keep an already-open pane usable. If no other board is available, create
+    // one empty replacement and register it in every Writing order.
+    if (openLeafIds.length && !replacementId) {
+      replacementId = allocateTextBoardId(currentTree, boardHTMLRef.current, archivedTextRef.current, uid);
+      boardHTMLRef.current[replacementId] = "";
+      nextTree = addNavigatorBoard(nextTree, navigator.id, group, replacementId);
+      nextNavigator = findNavigatorLeaf(nextTree);
+      remainingIds = nextNavigator ? flattenNavigatorBoardIds(navigatorEntriesForLeaf(nextNavigator, group)) : [replacementId];
+    }
+
+    if (replacementId) {
+      for (const leafId of openLeafIds) nextTree = retargetLeafTextId(nextTree, leafId, replacementId);
+    }
+    setTree(nextTree);
+    delete boardHTMLRef.current[boardId];
+    delete archivedTextRef.current[boardId];
+    setArchivedText((previous) => {
+      const next = { ...previous };
+      delete next[boardId];
+      return next;
+    });
+    if (activeNavigatorTextId === boardId) setActiveNavigatorTextId(replacementId || remainingIds[0] || null);
+    setSelectedNavigatorBoardIds((selected) => selected.filter((id) => id !== boardId));
+    navigatorSelectionAnchorRef.current = null;
+    io.markDirty();
+    setSessionKey((key) => key + 1);
+    emitEditState();
+    requestAnimationFrame(() => pushHistory("delete-navigator-board"));
+    io.notify(group === "writing" ? "Writing board deleted." : "Note board deleted.", "info", 1600);
+  }, [activeNavigatorTextId, emitEditState, io, setArchivedText]);
 
   React.useEffect(() => {
     if (!(window as any).__TAURI_IPC__) return;
@@ -1729,7 +2606,8 @@ const applySnap = (s: HistorySnap) => {
       const p = prefsRef.current;
       const sec = Number(p?.autosaveIntervalSec ?? 60);
 
-      if (p?.autosave) {
+      const autosaveEnabled = autosaveOverrideForFileRef.current ?? !!p?.autosave;
+      if (autosaveEnabled) {
         if (hasBoundFileRef.current) {
           try {
             if (io.isDirty()) {
@@ -1770,11 +2648,26 @@ const applySnap = (s: HistorySnap) => {
   // Mark dirty on text changes
   const handleBoardChange = (id: string, html: string) => {
     const prevRaw = boardHTMLRef.current[id];
-      if (prevRaw === undefined) { boardHTMLRef.current[id] = html; return; }
-      const prevNorm = normalizeHTMLForDirty(prevRaw || "");
-      const nextNorm = normalizeHTMLForDirty(html || "");
+    if (prevRaw === undefined) {
       boardHTMLRef.current[id] = html;
-      if (prevNorm !== nextNorm) io.markDirty();
+      window.dispatchEvent(new CustomEvent("sw:text-content-change", { detail: { id } }));
+      return;
+    }
+    if (prevRaw === html) return;
+
+    boardHTMLRef.current[id] = html;
+    window.dispatchEvent(new CustomEvent("sw:text-content-change", { detail: { id } }));
+
+    // Normal typing changes ordinary HTML directly. Avoid reparsing the whole
+    // document twice unless a transient caret/selection marker may be present.
+    if (!TRANSIENT_DIRTY_MARKUP.test(prevRaw) && !TRANSIENT_DIRTY_MARKUP.test(html)) {
+      io.markDirty();
+      return;
+    }
+
+    const prevNorm = normalizeHTMLForDirty(prevRaw || "");
+    const nextNorm = normalizeHTMLForDirty(html || "");
+    if (prevNorm !== nextNorm) io.markDirty();
   };
 
   // Context menu
@@ -1902,7 +2795,7 @@ const applySnap = (s: HistorySnap) => {
     requestAnimationFrame(() => fileInputRef.current?.click());
   };
 
-  const applyImageFromAbsPath = React.useCallback(async (imageId: string, absPath: string) => {
+  const applyImageFromAbsPath = React.useCallback(async (imageId: string, absPath: string): Promise<boolean> => {
     try {
       const prevPath = imagePathsRef.current?.[imageId] || null;
 
@@ -1934,9 +2827,11 @@ const applySnap = (s: HistorySnap) => {
       if (prevPath !== absPath) io.markDirty(); 
 
       focusImageBoard(imageId);
+      return true;
     } catch (e) {
       console.error(e);
       io.notify?.("Failed to load image.", "error", 1800);
+      return false;
     }
   }, []);
 
@@ -2084,48 +2979,6 @@ const applySnap = (s: HistorySnap) => {
   }, []);
 
 
-  // Auto-move (swap) logic
-  function openBoardHere(targetLeafId: string, srcTextId: string, html: string) {
-    const targetLeaf = findLeaf(treeRef.current, targetLeafId);
-    if (!targetLeaf || targetLeaf.kind !== "text") return;
-
-    // Ensure selected board content is present (file/archive HTML applied)
-    if (html != null && html !== undefined) {
-      boardHTMLRef.current[srcTextId] = html;
-    } else {
-      boardHTMLRef.current[srcTextId] = boardHTMLRef.current[srcTextId] ?? "";
-    }
-
-    const targetPrevId = targetLeaf.textId;
-    // Create buffer if target’s previous board buffer is missing
-    if (boardHTMLRef.current[targetPrevId] === undefined) {
-      boardHTMLRef.current[targetPrevId] = "";
-    }
-
-    // Find leaves already showing this board (excluding target)
-    const openedElsewhere = findLeavesByTextId(treeRef.current, srcTextId)
-      .filter(id => id !== targetLeafId);
-
-    if (openedElsewhere.length > 0) {
-      // MOVE: swap with the first found leaf
-      const srcLeafId = openedElsewhere[0];
-
-      setTree(t => {
-        let r = retargetLeafTextId(t, targetLeafId, srcTextId); 
-        r = retargetLeafTextId(r, srcLeafId,    targetPrevId);  
-        return r;
-      });
-    } else {
-      // OPEN: bind here without swap
-      setTree(t => retargetLeafTextId(t, targetLeafId, srcTextId));
-    }
-
-    io.markDirty();
-    setSessionKey(k => k + 1);
-    setBoardPicker({ open: false });
-    pushHistory("openBoardHere");
-  }
-  
   function normalizeHTMLForDirty(html: string): string {
     if (!html) return "";
     const div = document.createElement("div");
@@ -2202,9 +3055,312 @@ const applySnap = (s: HistorySnap) => {
   }
 
   /* ---------- Renderers ---------- */
+  const openNavigatorBoard = (
+    boardId: string,
+    group: "writing" | "notes",
+    droppedLeafId: string,
+    droppedLeafKind: LeafKind,
+    setAsAnchor = false,
+  ) => {
+    const currentTree = treeRef.current;
+    const activeLeaf = activeTextLeafId ? findLeaf(currentTree, activeTextLeafId) : undefined;
+    const targetLeafId = droppedLeafKind === "text"
+      ? droppedLeafId
+      : droppedLeafKind === "image"
+        ? droppedLeafId
+        : activeLeaf?.kind === "text"
+          ? activeLeaf.id
+          : collectTextLeaves(currentTree)[0]?.id;
+    if (!targetLeafId) return;
+    const targetLeaf = findLeaf(currentTree, targetLeafId);
+    if (!targetLeaf || (targetLeaf.kind !== "text" && targetLeaf.kind !== "image")) return;
+    if (targetLeaf.textId === boardId) {
+      if (setAsAnchor) {
+        const navigator = findNavigatorLeaf(currentTree);
+        if (!navigator) return;
+        setTree(updateNavigator(currentTree, navigator.id, (item) => ({
+          ...item,
+          mainBoardId: boardId,
+          mainPaneLeafId: targetLeafId,
+        })));
+        io.markDirty();
+        requestAnimationFrame(() => pushHistory("set-main-board"));
+      }
+      return;
+    }
+
+    // A board can only be mounted in one text pane at a time. If it is already
+    // open, move it by swapping the destination pane's board back to its source.
+    const targetPreviousBoardId = targetLeaf.textId;
+    const sourceLeafId = findLeavesByTextId(currentTree, boardId)
+      .find((id) => id !== targetLeafId);
+    const replacementBoardId = targetLeaf.kind === "image" && sourceLeafId
+      ? allocateTextBoardId(currentTree, boardHTMLRef.current, archivedTextRef.current, uid)
+      : targetPreviousBoardId;
+    if (targetLeaf.kind === "image" && sourceLeafId) boardHTMLRef.current[replacementBoardId] = "";
+    const targetGroup = targetLeaf.kind === "text" ? (targetLeaf.textGroup ?? group) : group;
+    setTree((previous) => {
+      let next = targetLeaf.kind === "image"
+        ? retargetLeafAsText(previous, targetLeafId, boardId, targetGroup)
+        : retargetLeafTextId(previous, targetLeafId, boardId);
+      if (sourceLeafId) {
+        next = retargetLeafTextId(next, sourceLeafId, replacementBoardId);
+        if (targetLeaf.kind === "image") {
+          const navigator = findNavigatorLeaf(next);
+          if (navigator) next = addNavigatorBoard(next, navigator.id, group, replacementBoardId);
+        }
+      }
+      if (setAsAnchor) {
+        const navigator = findNavigatorLeaf(next);
+        if (navigator) {
+          next = updateNavigator(next, navigator.id, (item) => ({
+            ...item,
+            mainBoardId: boardId,
+            mainPaneLeafId: targetLeafId,
+          }));
+        }
+      }
+      return next;
+    });
+    setActiveNavigatorTextId(boardId);
+    setActiveTextLeafId(targetLeafId);
+    setSelectedNavigatorBoardIds([]);
+    navigatorSelectionAnchorRef.current = null;
+    io.markDirty();
+    setSessionKey((key) => key + 1);
+    requestAnimationFrame(() => {
+      pushHistory(`open-${group}-board`);
+      textRefs.current[boardId]?.focus?.();
+    });
+  };
+
+  const setBoardAsMain = (boardId: string, paneId: string) => {
+    const currentTree = treeRef.current;
+    const navigator = findNavigatorLeaf(currentTree);
+    if (!navigator) return;
+    setTree(updateNavigator(currentTree, navigator.id, (item) => ({
+      ...item,
+      mainBoardId: boardId,
+      mainPaneLeafId: paneId,
+    })));
+    io.markDirty();
+    requestAnimationFrame(() => pushHistory("set-main-board"));
+  };
+
+  const openBoardInMain = (boardId: string, group: "writing" | "notes") => {
+    const currentTree = treeRef.current;
+    const navigator = findNavigatorLeaf(currentTree);
+    const savedMainLeaf = navigator?.mainPaneLeafId
+      ? findLeaf(currentTree, navigator.mainPaneLeafId)
+      : undefined;
+    // Anchor is bound to the pane where the author marked the Anchor Board.
+    // Fall back for older projects that do not yet have a saved pane ID.
+    const mainLeaf = savedMainLeaf
+      || collectTextLeaves(currentTree).find((item) => (item.textGroup ?? "writing") === "writing")
+      || collectTextLeaves(currentTree)[0];
+    if (mainLeaf) openNavigatorBoard(boardId, group, mainLeaf.id, mainLeaf.kind, true);
+  };
+
   const renderLeaf = (leaf: LeafNode) => {
 
-    if (leaf.kind === "text") {
+    if (leaf.kind === "navigator") {
+      const writingIds = leaf.writingBoardIds || collectTextLeaves(tree)
+        .filter((item) => (item.textGroup ?? "writing") === "writing")
+        .map((item) => item.textId);
+      const notesIds = leaf.noteBoardIds || collectTextLeaves(tree)
+        .filter((item) => item.textGroup === "notes")
+        .map((item) => item.textId);
+      const toNavigatorItems = (entries: NavigatorEntry[], group: "writing" | "notes"): NavigatorTextItem[] => entries.map((entry) =>
+        entry.type === "group"
+          ? {
+              id: entry.id, kind: "group", label: entry.name, group, collapsed: entry.collapsed,
+              children: entry.children.map((id) => ({
+                id, kind: "board", group, isMain: leaf.mainBoardId === id,
+                label: leaf.boardNames?.[id] || firstLineFromHTML(getInitialHTML(id), 36) || "Untitled TextBoard",
+              })),
+            }
+          : {
+              id: entry.id, kind: "board", group, isMain: leaf.mainBoardId === entry.id,
+              label: leaf.boardNames?.[entry.id] || firstLineFromHTML(getInitialHTML(entry.id), 36) || "Untitled TextBoard",
+            }
+      );
+      const writing = toNavigatorItems(navigatorEntriesForLeaf(leaf, "writing").length
+        ? navigatorEntriesForLeaf(leaf, "writing") : writingIds.map((id) => ({ type: "board" as const, id })), "writing");
+      const notes = toNavigatorItems(navigatorEntriesForLeaf(leaf, "notes").length
+        ? navigatorEntriesForLeaf(leaf, "notes") : notesIds.map((id) => ({ type: "board" as const, id })), "notes");
+      const writingVariants = writingVariantsForLeaf(leaf).map(({ id, name }) => ({ id, name }));
+      return (
+        <LeafPane
+          key={`leaf-${leaf.id}-${sessionKey}`}
+          leafId={leaf.id}
+          kind={leaf.kind}
+          onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
+          onRequestSplit={handleRequestSplit}
+          onRequestSwap={handleSwapPanes}
+          onSwapTargetChange={setSwapTargetLeafId}
+          swapTargetLeafId={swapTargetLeafId}
+          accentColor={(prefs as any)?.accentColor}
+        >
+          <NavigatorBoard
+            writing={writing}
+            notes={notes}
+            writingVariants={writingVariants}
+            activeWritingVariantId={leaf.activeWritingVariantId || "main"}
+            onSelectWritingVariant={(id) => {
+              setTree((previous) => selectWritingVariant(previous, leaf.id, id));
+              setSelectedNavigatorBoardIds([]);
+              navigatorSelectionAnchorRef.current = null;
+              io.markDirty();
+            }}
+            onAddWritingVariant={() => {
+              setTree((previous) => createWritingVariant(previous, leaf.id).tree);
+              setSelectedNavigatorBoardIds([]);
+              navigatorSelectionAnchorRef.current = null;
+              io.markDirty();
+              io.notify("Draft order created.", "info", 1400);
+              requestAnimationFrame(() => pushHistory("create-writing-draft"));
+            }}
+            onRenameWritingVariant={(id, name) => {
+              setTree((previous) => renameWritingVariant(previous, leaf.id, id, name));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("rename-writing-order"));
+            }}
+            onDeleteWritingVariant={(id) => {
+              setTree((previous) => deleteWritingVariant(previous, leaf.id, id));
+              setSelectedNavigatorBoardIds([]);
+              navigatorSelectionAnchorRef.current = null;
+              io.markDirty();
+              io.notify("Draft order deleted.", "info", 1400);
+              requestAnimationFrame(() => pushHistory("delete-writing-order"));
+            }}
+            onReorderWritingVariant={(sourceId, targetId, position) => {
+              setTree((previous) => reorderWritingVariant(previous, leaf.id, sourceId, targetId, position));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("reorder-writing-orders"));
+            }}
+            getBoardLabel={(id) => leaf.boardNames?.[id] || firstLineFromHTML(getInitialHTML(id), 36) || "Untitled TextBoard"}
+            selectedIds={selectedNavigatorBoardIds}
+            onClearSelection={() => {
+              setSelectedNavigatorBoardIds([]);
+              navigatorSelectionAnchorRef.current = null;
+            }}
+            onSelectionChange={(ids) => {
+              setSelectedNavigatorBoardIds(ids);
+              navigatorSelectionAnchorRef.current = ids[0] ?? null;
+            }}
+            onSelectBoard={(id, event) => {
+              const flattenVisible = (items: NavigatorTextItem[]): string[] => items.flatMap((item) => [
+                item.id,
+                ...(!item.collapsed && item.children ? flattenVisible(item.children) : []),
+              ]);
+              const orderedIds = [...flattenVisible(writing), ...flattenVisible(notes)];
+              const anchorId = navigatorSelectionAnchorRef.current;
+              if (event.shiftKey && anchorId && orderedIds.includes(anchorId)) {
+                const from = orderedIds.indexOf(anchorId);
+                const to = orderedIds.indexOf(id);
+                const range = orderedIds.slice(Math.min(from, to), Math.max(from, to) + 1);
+                setSelectedNavigatorBoardIds(range);
+              } else if (event.ctrlKey || event.metaKey) {
+                setSelectedNavigatorBoardIds((current) => current.includes(id)
+                  ? current.filter((selectedId) => selectedId !== id)
+                  : [...current, id]);
+                navigatorSelectionAnchorRef.current = id;
+              } else {
+                setSelectedNavigatorBoardIds([id]);
+                navigatorSelectionAnchorRef.current = id;
+              }
+            }}
+            onRenameBoard={(id, name) => {
+              setTree((previous) => setNavigatorBoardName(previous, leaf.id, id, name.trim()));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("rename-navigator-board"));
+            }}
+            onDeleteBoard={handleNavigatorDeleteBoard}
+            onRenameGroup={(id, group, name) => {
+              setTree((previous) => renameNavigatorGroup(previous, leaf.id, group, id, name.trim()));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("rename-navigator-group"));
+            }}
+            onGroupSelected={(ids, group) => {
+              const entries = navigatorEntriesForLeaf(leaf, group);
+              if (ids.length < 1 || ids.some((id) => !entries.some((entry) => entry.type === "board" && entry.id === id))) return null;
+              const allGroups = [...navigatorEntriesForLeaf(leaf, "writing"), ...navigatorEntriesForLeaf(leaf, "notes")]
+                .filter((entry): entry is Extract<NavigatorEntry, { type: "group" }> => entry.type === "group");
+              const nextNumber = Math.max(0, ...allGroups.map((entry) => Number(entry.name.match(/^group_(\d+)$/i)?.[1] || 0))) + 1;
+              const groupId = `G${uid()}`;
+              const groupName = `group_${String(nextNumber).padStart(2, "0")}`;
+              setTree((previous) => groupNavigatorBoards(previous, leaf.id, group, ids, groupId, groupName));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("group-navigator-boards"));
+              return groupId;
+            }}
+            onUngroupSelected={(ids, group) => {
+              const entries = navigatorEntriesForLeaf(leaf, group);
+              if (!ids.some((id) => entries.some((entry) => entry.type === "group" && entry.id === id))) return [];
+              const result = ungroupNavigatorGroups(treeRef.current, leaf.id, group, ids);
+              if (!result.expandedIds.length) return [];
+              setTree(result.tree);
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("ungroup-navigator-boards"));
+              return result.expandedIds;
+            }}
+            onToggleGroup={(id, group) => {
+              setTree((previous) => toggleNavigatorGroup(previous, leaf.id, group, id));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("toggle-navigator-group"));
+            }}
+            onMoveBoard={(move) => {
+              setTree((previous) => {
+                const moved = moveNavigatorBoard(
+                  previous,
+                  leaf.id,
+                  move.boardId,
+                  move.sourceGroup,
+                  move.targetGroup,
+                  move.targetId,
+                  move.targetParentGroupId,
+                  move.position,
+                );
+                return move.sourceGroup === move.targetGroup
+                  ? moved
+                  : setTextBoardGroup(moved, move.boardId, move.targetGroup);
+              });
+              setSelectedNavigatorBoardIds([move.boardId]);
+              navigatorSelectionAnchorRef.current = move.boardId;
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("move-navigator-board"));
+            }}
+            activeId={activeNavigatorTextId}
+            accentColor={(prefs as any)?.accentColor}
+            manuscriptOpen={containsLeafKind(tree, "manuscript")}
+            onToggleManuscript={() => {
+              setTree((prev) => toggleManuscriptView(prev, leaf.id));
+              io.markDirty();
+              requestAnimationFrame(() => pushHistory("manuscript-view"));
+            }}
+            onAddBoard={(group) => {
+              const id = allocateTextBoardId(treeRef.current, boardHTMLRef.current, archivedTextRef.current, uid);
+              boardHTMLRef.current[id] = "";
+              setTree((prev) => retargetGroupTextBoard(
+                addNavigatorBoard(prev, leaf.id, group, id), group, id
+              ));
+              setActiveNavigatorTextId(id);
+              setSelectedNavigatorBoardIds([]);
+              navigatorSelectionAnchorRef.current = null;
+              io.markDirty();
+              io.notify(group === "writing" ? "Writing board created." : "Note board created.", "info", 1400);
+              requestAnimationFrame(() => {
+                pushHistory(`add-${group}-board`);
+                textRefs.current[id]?.focus?.();
+              });
+            }}
+            onOpenInMain={(id, group) => openBoardInMain(id, group)}
+          />
+        </LeafPane>
+      );
+    }
+
+    if (leaf.kind === "text" || leaf.kind === "scenario") {
       const curlyPref = normalizeCurlyPref(
         (prefs as any)?.curly ??
         (prefs as any)?.curlyReplace ??
@@ -2225,13 +3381,27 @@ const applySnap = (s: HistorySnap) => {
           key={`leaf-${leaf.id}-${sessionKey}`}  
           leafId={leaf.id}
           kind={leaf.kind}
+          onActivate={() => {
+            setSelectedNavigatorBoardIds([]);
+            navigatorSelectionAnchorRef.current = null;
+            setActiveNavigatorTextId(leaf.textId);
+            setActiveTextLeafId(leaf.id);
+          }}
+          dropGroup="any"
+          onDropNavigatorBoard={(item) => openNavigatorBoard(item.boardId, item.group, leaf.id, leaf.kind)}
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
+          onRequestSwap={handleSwapPanes}
+          onSwapTargetChange={setSwapTargetLeafId}
+          swapTargetLeafId={swapTargetLeafId}
+          accentColor={(prefs as any)?.accentColor}
         >
         <TextBoard
           ref={(h) => { textRefs.current[leaf.textId] = h; }}
-          key={`${sessionKey}:${leaf.id}`}
+          key={`${sessionKey}:${leaf.id}:${leaf.textId}`}
           id={leaf.textId}
+          scenario={leaf.kind === "scenario"}
+          accentColor={(prefs as any)?.accentColor}
           initialHTML={getInitialHTML(leaf.textId)}
           onChange={(html) => handleBoardChange(leaf.textId, html)}
           color="var(--text-1)"
@@ -2256,12 +3426,63 @@ const applySnap = (s: HistorySnap) => {
           kind={leaf.kind}
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
+          onRequestSwap={handleSwapPanes}
+          onSwapTargetChange={setSwapTargetLeafId}
+          swapTargetLeafId={swapTargetLeafId}
+          accentColor={(prefs as any)?.accentColor}
         >
           <ViewerBoard
             ref={(h) => { viewerRefs.current[leaf.id] = h; }}
             state={viewerStates[leaf.id] || { fileLabel: "", boards: [], selectedId: "", q: "" }}
             onChange={(patch) => setViewerStates(m => ({ ...m, [leaf.id]: { ...(m[leaf.id] || {fileLabel:"", boards:[], selectedId:"", q:""}), ...patch } }))}
           />
+        </LeafPane>
+      );
+    }
+
+    if (leaf.kind === "manuscript") {
+      const navigator = findNavigatorLeaf(tree);
+      const boardIds = navigator
+        ? flattenNavigatorBoardIds(navigatorEntriesForLeaf(navigator, "writing"))
+        : collectTextLeaves(tree).filter((item) => (item.textGroup ?? "writing") === "writing").map((item) => item.textId);
+      const manuscriptHtml = () => {
+        flushOpenEditorsToStore();
+        return boardIds.map((id) => `<section>${getInitialHTML(id)}</section>`).join("\n");
+      };
+      const manuscriptPlain = () => {
+        flushOpenEditorsToStore();
+        const parts = boardIds.map((id) => {
+          const container = document.createElement("div");
+          container.innerHTML = getInitialHTML(id) || "";
+          const readNode = (node: Node): string => {
+            if (node.nodeType === Node.TEXT_NODE) return node.textContent || "";
+            if (!(node instanceof HTMLElement)) return Array.from(node.childNodes).map(readNode).join("");
+            if (node.tagName === "BR") return "\n";
+            const content = Array.from(node.childNodes).map(readNode).join("");
+            return node.tagName === "P" || node.tagName === "DIV" ? `\n${content}\n` : content;
+          };
+          return Array.from(container.childNodes).map(readNode).join("")
+            .replace(/\r\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+        }).filter(Boolean);
+        return parts.join("\n\n");
+      };
+      return (
+        <LeafPane
+          key={`leaf-${leaf.id}-${sessionKey}`}
+          leafId={leaf.id}
+          kind={leaf.kind}
+          onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
+          onRequestSplit={handleRequestSplit}
+          onRequestSwap={handleSwapPanes}
+          onSwapTargetChange={setSwapTargetLeafId}
+          swapTargetLeafId={swapTargetLeafId}
+          accentColor={(prefs as any)?.accentColor}
+        >
+          <ManuscriptBoard boardIds={boardIds} gapLines={prefs.manuscriptGapLines ?? 1}
+            getHTML={(id) => getInitialHTML(id)}
+            getBoardName={(id) => navigator?.boardNames?.[id] || firstLineFromHTML(getInitialHTML(id), 36) || "Untitled TextBoard"}
+            onExportTxt={() => void onExportTxt(manuscriptPlain)}
+            onExportPdf={() => void onExportPrint(manuscriptHtml)} />
         </LeafPane>
       );
     }
@@ -2274,6 +3495,10 @@ const applySnap = (s: HistorySnap) => {
           kind={leaf.kind}
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
+          onRequestSwap={handleSwapPanes}
+          onSwapTargetChange={setSwapTargetLeafId}
+          swapTargetLeafId={swapTargetLeafId}
+          accentColor={(prefs as any)?.accentColor}
         >
           <EditBoard onDeleteRequest={handleDeleteBoards} />
         </LeafPane>
@@ -2287,8 +3512,14 @@ const applySnap = (s: HistorySnap) => {
         key={`leaf-${leaf.id}-${sessionKey}`}
         leafId={leaf.id}
         kind={leaf.kind}
+        dropGroup="any"
+        onDropNavigatorBoard={(item) => openNavigatorBoard(item.boardId, item.group, leaf.id, leaf.kind)}
         onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
         onRequestSplit={handleRequestSplit}
+        onRequestSwap={handleSwapPanes}
+        onSwapTargetChange={setSwapTargetLeafId}
+        swapTargetLeafId={swapTargetLeafId}
+        accentColor={(prefs as any)?.accentColor}
       >
         <ImageBoard
           ref={(h) => {
@@ -2315,10 +3546,11 @@ const applySnap = (s: HistorySnap) => {
 
   const LEAF_MIN_W = 48; 
   const LEAF_MIN_H = 48; 
-  const GUTTER_PX  = 2;
+  const GUTTER_PX  = 1;
 
   function subtreeMinWidth(n: TreeNode): number {
-    if (!n || n.type === "leaf") return LEAF_MIN_W;
+    if (!n) return LEAF_MIN_W;
+    if (n.type === "leaf") return n.kind === "navigator" ? 176 : LEAF_MIN_W;
     if (n.dir === "vertical") {
       return subtreeMinWidth(n.a) + GUTTER_PX + subtreeMinWidth(n.b);
     }
@@ -2334,6 +3566,11 @@ const applySnap = (s: HistorySnap) => {
   }
 
   const [draggingPath, setDraggingPath] = React.useState<string | null>(null);
+  const [swapTargetLeafId, setSwapTargetLeafId] = React.useState<string | null>(null);
+
+  const subtreeHasKind = (node: TreeNode, kind: LeafKind): boolean => node.type === "leaf"
+    ? node.kind === kind
+    : subtreeHasKind(node.a, kind) || subtreeHasKind(node.b, kind);
 
   const renderNode = (node: TreeNode, path: number[] = []): React.ReactNode => {
     if (node.type === "leaf") {
@@ -2345,6 +3582,10 @@ const applySnap = (s: HistorySnap) => {
       node.dir === "vertical" ? subtreeMinWidth(node.a) : subtreeMinHeight(node.a);
     const minBpx =
       node.dir === "vertical" ? subtreeMinWidth(node.b) : subtreeMinHeight(node.b);
+    const insetGutter = node.dir === "vertical" && (
+      (subtreeHasKind(node.a, "navigator") && subtreeHasKind(node.b, "manuscript")) ||
+      (subtreeHasKind(node.b, "navigator") && subtreeHasKind(node.a, "manuscript"))
+    );
 
     return (
       <SplitPane
@@ -2356,6 +3597,7 @@ const applySnap = (s: HistorySnap) => {
         minA={minApx}
         minB={minBpx}
         pathKey={path.join(".")}
+        insetGutter={insetGutter}
         onDragStart={() => setDraggingPath(path.join("."))}
         onDragEnd={() => setDraggingPath(null)}
         a={renderNode(node.a, [...path, 0])}
@@ -2371,6 +3613,7 @@ const applySnap = (s: HistorySnap) => {
     if (!leaf) return [];
 
     if (menu.source === "content") {
+      if (leaf.kind === "manuscript" || leaf.kind === "navigator") return [];
       if (leaf.kind === "image") {
         const imageId = leaf.imageId;
         const src = imageDocs[imageId]?.src ?? null;
@@ -2426,14 +3669,38 @@ const applySnap = (s: HistorySnap) => {
           disabled: !boardId,
           onClick: () => boardId && window.dispatchEvent(new CustomEvent("sw:echo:set-start", { detail: { id: boardId } })),
         },
+        ...(leaf.kind === "text" || leaf.kind === "scenario" ? [{
+          label: (findNavigatorLeaf(tree)?.mainBoardId || collectTextLeaves(tree).find((item) => (item.textGroup ?? "writing") === "writing")?.textId) === boardId
+            ? "✓ Anchor Board"
+            : "Set as Anchor Board",
+          disabled: !boardId,
+          onClick: () => boardId && setBoardAsMain(boardId, leaf.id),
+        }] : []),
       ];
     }
 
     if (menu.pane === "root") {
-      if (leaf.kind === "text") {
+      if (leaf.kind === "navigator") {
         return [
           { label: "Change Board Type >", onClick: keepOpenOnce(() => gotoPane("text:changeType")) },
-          { label: "Browse boards in file… >", onClick: () => { setMenu(m => ({ ...m, open: false })); openBoardPickerFor(leaf.id); } },
+          {
+            label: "Close board",
+            onClick: () => {
+              setTree((t) => removeLeaf(t, leaf.id));
+              io.markDirty();
+            },
+          },
+        ];
+      }
+
+      if (leaf.kind === "text" || leaf.kind === "scenario") {
+        const mainBoardId = findNavigatorLeaf(tree)?.mainBoardId;
+        return [
+          { label: "Change Board Type >", onClick: keepOpenOnce(() => gotoPane("text:changeType")) },
+          {
+            label: mainBoardId === leaf.textId ? "✓ Anchor Board" : "Set as Anchor Board",
+            onClick: () => setBoardAsMain(leaf.textId, leaf.id),
+          },
           { label: "Export as >", onClick: keepOpenOnce(() => gotoPane("text:export")) },
           {
             label: "Close board",
@@ -2445,6 +3712,16 @@ const applySnap = (s: HistorySnap) => {
             },
           },
         ];
+      }
+
+      if (leaf.kind === "manuscript") {
+        return [{
+          label: "Close board",
+          onClick: () => {
+            setTree((t) => removeLeaf(t, leaf.id));
+            io.markDirty();
+          },
+        }];
       }
 
       if (leaf.kind === "viewer") {
@@ -2459,7 +3736,7 @@ const applySnap = (s: HistorySnap) => {
                 io.notify("Pick a board in Viewer first.");
                 return;
               }
-              const newId = `T${((Math.random() * 1e9) >>> 0)}`;
+              const newId = allocateTextBoardId(treeRef.current, boardHTMLRef.current, archivedTextRef.current, uid);
               boardHTMLRef.current[newId] = sel.html || "";
               setTree(t => {
                 let r = changeKind(t, leaf.id, "text");
@@ -2515,11 +3792,14 @@ const applySnap = (s: HistorySnap) => {
     }
 
     if (menu.pane === "text:changeType") {
+      const changeToText = () => {
+        setTree((t) => changeTextBoardKind(t, leaf.id, "text"));
+        io.markDirty();
+      };
       return [
-        { label: "Text",   onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "text"));   io.markDirty(); } },
+        { label: "Text",   onClick: changeToText },
         { label: "Image",  onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "image"));  io.markDirty(); } },
-        { label: "Viewer", onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "viewer")); io.markDirty(); } },
-        { label: "Manage",   onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "edit"));   io.markDirty(); } },
+        { label: "Navigator", onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "navigator")); io.markDirty(); } },
       ];
     }
     if (menu.pane === "text:export") {
@@ -2551,11 +3831,14 @@ const applySnap = (s: HistorySnap) => {
     }
 
     if (menu.pane === "image:changeType") {
+      const changeToText = () => {
+        setTree((t) => changeTextBoardKind(t, leaf.id, "text"));
+        io.markDirty();
+      };
       return [
-        { label: "Text",   onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "text"));   io.markDirty(); } },
+        { label: "Text",   onClick: changeToText },
         { label: "Image",  onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "image"));  io.markDirty(); } },
-        { label: "Viewer", onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "viewer")); io.markDirty(); } },
-        { label: "Manage",   onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "edit"));   io.markDirty(); } },
+        { label: "Navigator", onClick: () => { setTree((t) => replaceLeafWithNew(t, leaf.id, "navigator")); io.markDirty(); } },
       ];
     }
 
@@ -2622,30 +3905,11 @@ const applySnap = (s: HistorySnap) => {
       >
         {renderNode(tree)}
 
-        {boardPicker.open && (
-          <BoardPickerModal
-            boards={(function () {
-              const fromOpen = Object.entries(boardHTMLRef.current || {}).map(([id, html]) => ({
-                id, html, source: "open" as const, preview: firstLineFromHTML(html),
-              }));
-              const fromArchived = Object.entries(archivedText || {}).map(([id, html]) => ({
-                id, html, source: "saved" as const, preview: firstLineFromHTML(html),
-              }));
-              const map = new Map<string, {id:string;html:string;source:"open"|"saved";preview:string}>();
-              for (const it of [...fromArchived, ...fromOpen]) map.set(it.id, it);
-              return Array.from(map.values());
-            })()}
-            onSelect={(id, html) => {
-              if (!boardPicker.targetLeafId) return;
-              openBoardHere(boardPicker.targetLeafId, id, html);
-            }}
-            onClose={() => setBoardPicker({ open: false })}
-          />
-        )}
-
         {showPrefs && (
           <PreferenceModal
             prefs={prefs}
+            autosaveOverride={autosaveSessionOverride}
+            onAutosaveToggle={(enabled) => window.dispatchEvent(new CustomEvent("sw:autosave:toggle-for-file", { detail: { enabled } }))}
             onChange={async (next: PrefsType) => {
               setPrefs(next);
               if ((next as any)?.workingFolder) setWorkingFolder((next as any).workingFolder);
@@ -2672,6 +3936,13 @@ const applySnap = (s: HistorySnap) => {
             bottom: 0,
             left: 0,
             width: 280,
+            // Keep the Sidebar's interaction accents tied to the user's project accent.
+            ...((prefs as any)?.accentColor ? {
+              ["--accent" as any]: (prefs as any).accentColor,
+              ["--sb-hover" as any]: "color-mix(in srgb, var(--accent) 16%, transparent)",
+              ["--sb-selected" as any]: "color-mix(in srgb, var(--accent) 16%, transparent)",
+              ["--sb-btn-bg-hover" as any]: "color-mix(in srgb, var(--accent) 16%, var(--sb-bg))",
+            } : {}),
             background: "var(--sb-bg)",
             borderRight: "1px solid var(--sb-border)",
             boxShadow: "8px 0 24px rgba(0,0,0,0.35)",
@@ -2693,35 +3964,50 @@ const applySnap = (s: HistorySnap) => {
             }}
             onSave={async () => { await save(); }}
             onSaveAs={async () => { await saveAsAndBind(); }}
+            onNew={async () => { await newWithGuard(); }}
+            onArchive={() => io.notify("Archive will be available in version 3.0.", "info", 2200)}
             onQuit={async () => { await quitWithGuard(); }}
           />
         </div>
       )}
 
       {ask3State.open && (
-        <Modal onClose={() => { ask3State.resolve?.("cancel"); setAsk3State({open:false, msg:""}); }} width={420}>
+        <Modal onClose={() => { ask3State.resolve?.("cancel"); setAsk3State({open:false, msg:""}); }} width={420} backdrop="rgba(0,0,0,.34)">
           <div style={{ padding: 16 }}>
+            <div style={{ ["--exit-accent" as any]: (prefs as any)?.accentColor || "var(--accent)" }}>
+            <style>{`
+              .sw-exit-action:hover,
+              .sw-exit-action:focus-visible {
+                background: color-mix(in srgb, var(--exit-accent) 16%, var(--btn-bg)) !important;
+                border-color: color-mix(in srgb, var(--exit-accent) 58%, var(--border)) !important;
+                outline: none;
+              }
+            `}</style>
             <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Splitwriter</div>
             <div style={{ fontSize: 13, opacity: 0.9, whiteSpace: "pre-wrap" }}>{ask3State.msg}</div>
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
               <button
+                className="sw-exit-action"
                 onClick={() => { ask3State.resolve?.("save"); setAsk3State({open:false, msg:""}); }}
-                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--btn-bg)", color: "var(--text-1)" }}
+                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--btn-bg)", color: "var(--text-1)", whiteSpace: "nowrap", flexShrink: 0 }}
               >
-                Save and Quit
+                {ask3State.labels?.save || "Save and Quit"}
               </button>
               <button
+                className="sw-exit-action"
                 onClick={() => { ask3State.resolve?.("discard"); setAsk3State({open:false, msg:""}); }}
-                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--btn-bg)", color: "var(--text-1)" }}
+                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--btn-bg)", color: "var(--text-1)", whiteSpace: "nowrap", flexShrink: 0 }}
               >
-                Quit without Save
+                {ask3State.labels?.discard || "Quit without Save"}
               </button>
               <button
+                className="sw-exit-action"
                 onClick={() => { ask3State.resolve?.("cancel"); setAsk3State({open:false, msg:""}); }}
-                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--btn-bg)", color: "var(--text-1)" }}
+                style={{ padding: "6px 10px", borderRadius: 8, border: "1px solid var(--border)", background: "var(--btn-bg)", color: "var(--text-1)", whiteSpace: "nowrap", flexShrink: 0 }}
               >
-                Cancel
+                {ask3State.labels?.cancel || "Cancel"}
               </button>
+            </div>
             </div>
           </div>
         </Modal>
@@ -2746,6 +4032,7 @@ const applySnap = (s: HistorySnap) => {
             x={menu.x}
             y={menu.y}
             items={menuItems}
+            accentColor={(prefs as any)?.accentColor}
             onClose={() => {
               if (deferCloseRef.current) { deferCloseRef.current = false; return; }
               closeMenu();
@@ -2785,15 +4072,17 @@ function Modal({
   onClose,
   width = 560,
   background = "var(--bg)",  
+  backdrop = "transparent",
 }: {
   children: React.ReactNode;
   onClose: () => void;
   width?: number;
   background?: string;
+  backdrop?: string;
 }) {
   return (
     <div
-      style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 5000 }}
+      style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 5000, background: backdrop }}
       onMouseDown={onClose}
     >
       <div
@@ -2847,48 +4136,28 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
     </span>
   );
 
-  const RightClickKey: React.FC = () => (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        justifyContent: "center",
-        padding: "4px 12px",
-        borderRadius: 999,
-        background: "var(--hover)",
-        border: "1px solid var(--border)",
-        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-        fontSize: 11,
-        lineHeight: "16px",
-        whiteSpace: "nowrap",
-      }}
-    >
-      Right&nbsp;Click
-    </span>
-  );
-
   const Row = ({ k, v }: { k: React.ReactNode; v: React.ReactNode }) => (
     <div
       style={{
-        display: "flex",
-        justifyContent: "space-between",
+        display: "grid",
+        gridTemplateColumns: "minmax(0, 1fr) minmax(0, auto)",
+        alignItems: "center",
         gap: 12,
         padding: "6px 0",
       }}
-    >
-      <span style={{ opacity: 0.75 }}>{k}</span>
-      <span>{v}</span>
+    ><span style={{ opacity: 0.75, minWidth: 0 }}>{k}</span>
+      <span style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 4, maxWidth: "100%", textAlign: "right" }}>{v}</span>
     </div>
   );
 
   const Section = ({ title, children }: { title: string; children: React.ReactNode }) => (
-    <div style={{ marginTop: 16 }}>
+    <div style={{ marginTop: 22 }}>
       <div
         style={{
           fontSize: 12,
           letterSpacing: 0.3,
           color: "var(--text-muted)",
-          marginBottom: 6,
+          marginBottom: 9,
         }}
       >
         {title}
@@ -2941,7 +4210,7 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         >
           {/* left: version */}
           <span style={{ opacity: 0.8, whiteSpace: "nowrap" }}>
-            <AppVersion fallback="v1.2.0-portable" />
+            <AppVersion fallback="v2.0-portable" />
           </span>
 
           {/* center: repo link (accent only) */}
@@ -2982,7 +4251,26 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
 
       {/* SHORTCUTS */}
       <Section title="SHORTCUTS">
-        <Row k="Toggle Sidebar" v={<Keys parts={["Ctrl", "\\"]} />} />
+        <Row k="Sidebar" v={<Keys parts={["Ctrl", "\\"]} />} />
+        <Row k="New file" v={<Keys parts={["Ctrl", "N"]} />} />
+        <Row k="Open file" v={<Keys parts={["Ctrl", "O"]} />} />
+        <Row k="Save" v={<Keys parts={["Ctrl", "S"]} />} />
+        <Row k="Save As" v={<Keys parts={["Ctrl", "Shift", "S"]} />} />
+        <Row k="Undo" v={<Keys parts={["Ctrl", "Z"]} />} />
+        <Row k="Redo" v={<Keys parts={["Ctrl", "Y"]} />} />
+      </Section>
+
+      <Section title="NAVIGATOR">
+        <Row k="Group boards" v={<Keys parts={["Ctrl", "G"]} />} />
+        <Row k="Ungroup boards" v={<Keys parts={["Shift", "G"]} />} />
+        <div style={{ fontSize: 10, opacity: 0.65, marginTop: 6 }}>
+          Select boards with Ctrl- or Shift-click before grouping.
+        </div>
+      </Section>
+
+      <Section title="PANE LAYOUT">
+        <Row k="Split" v={<span>Drag handle within pane</span>} />
+        <Row k="Swap" v={<span>Drag handle onto another pane</span>} />
       </Section>
 
       {/* PRESET */}
@@ -3044,184 +4332,6 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         <Row k="Align Justify" v={<Keys parts={["Alt", "J"]} />} />
       </Section>
 
-      {/* CONTEXT MENU (TEXT BOARD) */}
-      <Section title="CONTEXT MENU (TEXT BOARD)">
-        <Row
-          k={
-            <span>
-              Copy / Paste / Typewriter /
-              <br />
-              Spell Checker
-            </span>
-          }
-          v={<RightClickKey />}
-        />
-        <div style={{ fontSize: 10, opacity: 0.65, marginTop: 6 }}>
-          Paste is normalized to <b>Plain Text + Body preset</b>.
-        </div>
-      </Section>
-
-      {/* CONTEXT MENU (IMAGE BOARD) */}
-      <Section title="CONTEXT MENU (IMAGE BOARD)">
-        <Row
-          k={
-            <span>
-              Change Image / Reset position /
-              <br />
-              Use as Echo background
-            </span>
-          }
-          v={<RightClickKey />}
-        />
-        <div style={{ fontSize: 10, opacity: 0.65, marginTop: 6 }}>
-          Double-click the image to reset zoom &amp; fit.
-        </div>
-      </Section>
-    </div>
-  );
-}
-
-/* ---------- BoardPickerModal ---------- */
-function BoardPickerModal({
-  boards,
-  onSelect,
-  onClose,
-}: {
-  boards: Array<{ id: string; html: string; source: "open" | "saved"; preview: string }>;
-  onSelect: (id: string, html: string) => void;
-  onClose: () => void;
-}) {
-  const [q, setQ] = React.useState("");
-  const filtered = React.useMemo(() => {
-    const s = q.trim().toLowerCase();
-    if (!s) return boards;
-    return boards.filter(b =>
-      b.id.toLowerCase().includes(s) || (b.preview || "").toLowerCase().includes(s)
-    );
-  }, [q, boards]);
-
-  React.useEffect(() => {
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
-    window.addEventListener("keydown", onKey, { capture: true });
-    return () => window.removeEventListener("keydown", onKey, { capture: true });
-  }, [onClose]);
-
-  return (
-    <div
-      style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", zIndex: 60 }}
-      onMouseDown={onClose}
-    >
-      <div
-        style={{
-          width: 560,
-          maxWidth: "calc(100% - 48px)",
-          maxHeight: "calc(100% - 48px)",
-          background: "var(--panel-bg)",
-          border: "1px solid var(--border)",
-          borderRadius: 12,
-          boxShadow: "0 24px 64px rgba(0,0,0,0.55)",
-          overflow: "hidden",
-          color: "var(--text-1)",
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
-      >
-        <div style={{ padding: 12, borderBottom: "1px solid var(--border)" }}>
-          <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 8 }}>Open board in JSON</div>
-          <input
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="Search by preview or ID…"
-            style={{
-              width: "100%",
-              padding: "8px 10px",
-              borderRadius: 8,
-              border: "1px solid var(--border)",
-              background: "var(--btn-bg)",
-              color: "var(--text-1)",
-              outline: "none",
-            }}
-          />
-          <div style={{ fontSize: 11, opacity: 0.6, marginTop: 6 }}>
-            {filtered.length} board{filtered.length === 1 ? "" : "s"}
-          </div>
-        </div>
-
-        <div style={{ maxHeight: 360, overflow: "auto" }}>
-          {filtered.length === 0 ? (
-            <div style={{ padding: 16, opacity: 0.6 }}>No boards found in this project.</div>
-          ) : (
-            filtered.map((b) => (
-              <div
-                key={b.id}
-                className="json-board-row"
-                onClick={() => onSelect(b.id, b.html)}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "1fr auto",
-                  gap: 10,
-                  padding: "10px 12px",
-                  borderBottom: "1px solid var(--border)",
-                  cursor: "pointer",
-                }}
-              >
-                <div style={{ minWidth: 0 }}>
-                  <div
-                    style={{
-                      fontSize: 13,
-                      fontWeight: 600,
-                      whiteSpace: "nowrap",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                    title={b.preview}
-                  >
-                    {b.preview || "(Empty line)"}
-                  </div>
-                  <div style={{ fontSize: 11, opacity: 0.6, marginTop: 2 }}>{b.id}</div>
-                </div>
-                <div
-                  style={{
-                    alignSelf: "center",
-                    fontSize: 11,
-                    opacity: 0.7,
-                    padding: "2px 6px",
-                    borderRadius: 6,
-                    background: "var(--hover)",
-                    border: "1px solid var(--border)",
-                  }}
-                  title={b.source === "open" ? "Currently opened set" : "Saved set in JSON"}
-                >
-                  {b.source === "open" ? "open" : "saved"}
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-
-        <div
-          style={{
-            display: "flex",
-            justifyContent: "flex-end",
-            gap: 8,
-            padding: 10,
-            borderTop: "1px solid var(--border)",
-          }}
-        >
-          <button
-            onClick={onClose}
-            style={{
-              padding: "6px 12px",
-              border: "1px solid var(--border)",
-              background: "var(--btn-bg)",
-              color: "var(--text-1)",
-              borderRadius: 8,
-              cursor: "pointer",
-            }}
-          >
-            Cancel
-          </button>
-        </div>
-      </div>
     </div>
   );
 }

@@ -1,4 +1,4 @@
-Splitwriter v1.2.0 Portable
+Splitwriter 2.0 Portable (Beta 3)
 Windows x64
 
 GET STARTED
@@ -17,11 +17,14 @@ project from inside the app. The app does not require an account or network
 connection for writing.
 
 PDF EXPORT
-Right-click a text board handle, choose Export as, then PDF. Use the Windows
-print window to select a printer or save the document as a PDF.
+Use the Manuscript View download menu to export the current writing order as
+text or PDF. PDF export opens the Windows print window.
 
 WINDOWS SMARTSCREEN
 This portable build is not digitally signed. If SmartScreen appears, choose
 More info, then Run anyway.
+
+This beta is provided for evaluation. Keep backup copies of important projects
+and report bugs with the steps that reproduce them.
 
 Splitwriter is free and open source under the MIT License. See LICENSE.txt.

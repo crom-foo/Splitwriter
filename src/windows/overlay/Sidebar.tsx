@@ -23,6 +23,7 @@
  */
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { FileEntry } from "@tauri-apps/api/fs";
 import * as fs from "@tauri-apps/api/fs";
 
@@ -58,6 +59,14 @@ async function appSaveAs() {
     if (typeof fn === "function") return await fn();
   } catch {}
   return emitApp("sw:saveas");
+}
+async function appNew() {
+  try {
+    const mod: any = await import("../runtime/appActions");
+    const fn = mod.newWithGuard || mod.newFile;
+    if (typeof fn === "function") return await fn();
+  } catch {}
+  return emitApp("sw:new");
 }
 async function appQuit() {
   try {
@@ -101,12 +110,26 @@ async function appOpen(absPath: string) {
   return emitApp("sw:open", { path: absPath });
 }
 
-/* ------------------------------- Icon assets ------------------------------ */
-const ICONS = {
-  FolderClose: new URL("../icons/Folder_Close.png", import.meta.url).href,
-  FolderOpen:  new URL("../icons/Folder_Open.png",  import.meta.url).href,
-  Paper:       new URL("../icons/Paper.png",        import.meta.url).href,
-};
+/* ----------------------------- Simple glyphs ----------------------------- */
+function FolderGlyph({ open = false, className = "" }: { open?: boolean; className?: string }) {
+  return <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    {open ? (
+      <>
+        <path d="M1.8 4.1V3.7c0-.55.45-1 1-1h3.1l1.35 1.45h5.95c.55 0 1 .45 1 1v.95" stroke="currentColor" strokeWidth=".95" strokeLinecap="round" strokeLinejoin="round" />
+        <path d="m2.05 6.05 11.85-.85-1.1 5.7c-.1.5-.5.85-1 .85H3.05c-.65 0-1.08-.54-.96-1.17l.8-4.53c.1-.55.5-.95 1.05-.99Z" stroke="currentColor" strokeWidth=".95" strokeLinecap="round" strokeLinejoin="round" />
+      </>
+    ) : (
+      <path d="M1.8 4.1c0-.55.45-1 1-1h3.1l1.35 1.45h5.95c.55 0 1 .45 1 1v5.45c0 .55-.45 1-1 1H2.8c-.55 0-1-.45-1-1V4.1Z" stroke="currentColor" strokeWidth=".95" strokeLinecap="round" strokeLinejoin="round" />
+    )}
+  </svg>;
+}
+
+function FileGlyph({ className = "" }: { className?: string }) {
+  return <svg className={className} width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <path d="M3.1 1.75h6l3.7 3.7v8.8H3.1V1.75Z" stroke="currentColor" strokeWidth=".9" strokeLinejoin="round" />
+    <path d="M9 1.9v3.7h3.55M5 8.1h5.9M5 10.35h5.9" stroke="currentColor" strokeWidth=".8" strokeLinecap="round" strokeLinejoin="round" />
+  </svg>;
+}
 function dirOf(abs: string) {
   const m = abs.match(/^(.*)[\\/][^\\/]+$/);
   return m ? m[1] : "";
@@ -195,7 +218,17 @@ function flattenForLookup(n: TreeNode, map: Map<string, TreeNode>) {
 }
 
 /* ------------------------------- FS helpers ------------------------------ */
-async function scanWorkingFolder(root: string): Promise<TreeNode> {
+async function scanWorkingFolder(root: string, previous?: TreeNode | null): Promise<TreeNode> {
+  const previousFolders = new Map<string, boolean>();
+  if (previous) {
+    const collectOpen = (node: TreeNode) => {
+      if (node.kind !== "folder") return;
+      previousFolders.set(node.path, node.open);
+      node.children.forEach(collectOpen);
+    };
+    collectOpen(previous);
+  }
+
   async function walk(abs: string): Promise<TreeNode> {
     let entries: FileEntry[] = [];
     try { entries = await fs.readDir(abs, { recursive: false }); } catch { entries = []; }
@@ -212,7 +245,7 @@ async function scanWorkingFolder(root: string): Promise<TreeNode> {
       kind: "folder",
       name: abs === root ? "__ROOT__" : abs.split(/[\\/]/).pop() || abs,
       path: abs,
-      open: true,
+      open: abs === root ? true : previousFolders.get(abs) ?? false,
       children: sortTreeNodes([...folders, ...filesOnly]),
     };
   }
@@ -268,15 +301,17 @@ async function safeRename(oldPath: string, newPath: string) {
 /* -------------------------------- Component ------------------------------ */
 export default function Sidebar({
   open, onClose, workingFolder, onOpenFile, onPreview,
-  onSave, onSaveAs, onQuit, hasDirty, openedPath,
+  onNew, onSave, onSaveAs, onArchive, onQuit, hasDirty, openedPath,
 }: {
   open: boolean;
   onClose: () => void;
   workingFolder: string;
   onOpenFile?: (absPath: string) => void;
   onPreview?: (p: { path: string; meta: SwonMeta | null }) => void;
+  onNew?: () => void | Promise<void>;
   onSave?: () => void;
   onSaveAs?: () => void;
+  onArchive?: () => void;
   onQuit?: () => void | Promise<void>;
   hasDirty?: boolean;
   openedPath?: string;
@@ -284,7 +319,10 @@ export default function Sidebar({
   const [root, setRoot] = useState<TreeNode | null>(null);
   const [loading, setLoading] = useState(false);
   const [selPath, setSelPath] = useState<string | null>(null);
+  const [editingPath, setEditingPath] = useState<string | null>(null);
   const [ctx, setCtx] = useState<{ x: number; y: number; target: TreeNode } | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<{ kind: "file" | "folder"; path: string; name: string } | null>(null);
+  const [deleteNotice, setDeleteNotice] = useState<string | null>(null);
   const ctxRef = useRef<HTMLDivElement | null>(null);
   // prefs 에서 온 working folder 를 세션 동안 잠궈두기
   const [lockedRoot, setLockedRoot] = useState<string>(() => lockedRootGlobal || "");
@@ -411,7 +449,7 @@ export default function Sidebar({
     if (!open || !effectiveRoot || !isTauri()) return;
     (async () => {
       setLoading(true);
-      try { setRoot(await scanWorkingFolder(effectiveRoot)); }
+      try { setRoot(await scanWorkingFolder(effectiveRoot, root)); }
       finally { setLoading(false); }
     })();
   }, [open, effectiveRoot]);
@@ -419,25 +457,29 @@ export default function Sidebar({
   const refresh = async () => {
     if (!isTauri() || !effectiveRoot) return;
     setLoading(true);
-    try { setRoot(await scanWorkingFolder(effectiveRoot)); }
+    try { setRoot(await scanWorkingFolder(effectiveRoot, root)); }
     finally { setLoading(false); }
   };
 
   // Header actions → 우선 부모 콜백, 없으면 appActions → 이벤트 발행
+  const handleNew    = () => { onNew    ? onNew()    : appNew(); };
   const handleSave   = () => { onSave   ? onSave()   : appSave(); };
   const handleSaveAs = () => { onSaveAs ? onSaveAs() : appSaveAs(); };
+  const handleArchive = () => { onArchive?.(); };
   const handleQuit   = () => { onQuit   ? (onQuit() as any) : appQuit(); };
 
   const headerBtnClass =
-    "h-7 px-2.5 rounded-md border border-[var(--sb-border)] " +
-    "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] " +
-    "text-[11px] font-semibold tracking-[0.01em] leading-none " +
+    "h-8 min-w-0 px-1.5 rounded-md border border-[var(--sb-border)] " +
+    "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] hover:text-[var(--text-1)] " +
+    "text-[11px] font-medium tracking-[0.01em] leading-none " +
     "transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)]";
+
+  const saveBtnClass = `${headerBtnClass} border-[color-mix(in_srgb,var(--accent)_32%,var(--sb-border))] bg-[color-mix(in_srgb,var(--accent)_10%,var(--sb-bg))] hover:bg-[color-mix(in_srgb,var(--accent)_16%,var(--sb-bg))]`;
 
   const folderOpenBtnClass =
     "shrink-0 self-center w-5 h-5 rounded-md border border-[var(--sb-border)] " +
-    "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] " +
-    "grid place-items-center opacity-70 hover:opacity-100 transition-colors transition-opacity " +
+    "bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] hover:text-[var(--text-1)] " +
+    "text-[var(--text-muted)] grid place-items-center opacity-70 hover:opacity-100 transition-colors transition-opacity " +
     "focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)] disabled:opacity-30 disabled:cursor-default";
 
   function toFileUrl(absPath: string) {
@@ -619,70 +661,55 @@ ${target}`);
     }
   }
 
-  async function newFile(basePath: string) {
-    if (!isTauri()) return;
-    let name = await openMiniPrompt("New SWON File", "Untitled.swon");
-    if (!name) return;
-    name = name.trim();
-    if (!name.toLowerCase().endsWith(".swon")) name += ".swon";
-    const abs = joinPath(basePath, name);
-    try {
-      const exists = await fs.exists(abs);
-      if (exists) { alert(`File already exists:\n${abs}`); return; }
-      const swon = {
-        kind: "splitwriter",
-        version: 1,
-        tree: {
-          type: "split", dir: "vertical", ratio: 0.5,
-          a: { type: "leaf", id: "1", kind: "text",  textId: "T2", imageId: "I3" },
-          b: { type: "leaf", id: "4", kind: "image", textId: "T5", imageId: "I6" },
-        },
-        openText: {},
-        archivedText: {},
-        images: {},
-        prefs: {},
-        echoBg: null,
-        savedAt: new Date().toISOString(),
-        title: name.replace(/\.swon$/i, ""),
-      };
-      await fs.writeTextFile(abs, JSON.stringify(swon, null, 2) + "\n");
-      await refresh();
-    } catch (err) {
-      alert(`Failed to create SWON file:\n${abs}`);
-      console.error(err);
-    }
-  }
-
   async function deleteFile(absPath: string) {
     if (!isTauri()) return;
-    if (hasDirty && !confirm("There are unsaved changes.\nDelete anyway?")) return;
-    if (!confirm(`Delete this file?\n${absPath}`)) return;
-    try { await fs.removeFile(absPath); await refresh(); }
-    catch (err) { alert(`Failed to delete:\n${absPath}`); console.error(err); }
+    setPendingDelete({ kind: "file", path: absPath, name: absPath.split(/[\\/]/).pop() || absPath });
   }
 
   async function deleteFolder(absPath: string) {
     if (!isTauri()) return;
-    if (!confirm(`Delete this folder (must be empty)?\n${absPath}`)) return;
     try {
       const entries = await fs.readDir(absPath, { recursive: false });
-      if (entries.length > 0) { alert("Folder is not empty."); return; }
-      await fs.removeDir(absPath);
-      await refresh();
+      if (entries.length > 0) { setDeleteNotice("Folder is not empty."); return; }
+      setPendingDelete({ kind: "folder", path: absPath, name: absPath.split(/[\\/]/).pop() || absPath });
     } catch (err) {
-      alert(`Failed to delete folder:\n${absPath}`);
       console.error(err);
+      setDeleteNotice("Failed to delete folder.");
     }
   }
 
-  async function beginRename(absPath: string) {
+  async function confirmDelete() {
+    const target = pendingDelete;
+    if (!target) return;
+    setPendingDelete(null);
+    try {
+      if (target.kind === "file") await fs.removeFile(target.path);
+      else {
+        const entries = await fs.readDir(target.path, { recursive: false });
+        if (entries.length > 0) { setDeleteNotice("Folder is not empty."); return; }
+        await fs.removeDir(target.path);
+      }
+      await refresh();
+    } catch (err) {
+      console.error(err);
+      setDeleteNotice(target.kind === "folder" ? "Failed to delete folder." : "Failed to delete file.");
+    }
+  }
+
+  function beginRename(absPath: string) {
     if (!isTauri()) return;
+    setCtx(null);
+    setSelPath(absPath);
+    setEditingPath(absPath);
+  }
+
+  async function commitRename(absPath: string, input: string) {
     const oldName = absPath.split(/[\\/]/).pop() || "item";
-    const input = await openMiniPrompt("Rename", oldName);
-    if (!input || input === oldName) return;
+    const cleaned = input.trim().replace(/[\\/:*?"<>|]/g, "_");
+    setEditingPath(null);
+    if (!cleaned || cleaned === oldName) return;
 
     // sanitize & Windows case-only workaround
-    const cleaned = input.trim().replace(/[\\/:*?"<>|]/g, "_");
     try {
       const base = dirOf(absPath);
       const sameExceptCase = oldName.toLowerCase() === cleaned.toLowerCase() && oldName !== cleaned;
@@ -763,10 +790,17 @@ ${target}`);
         className={`fixed inset-y-0 left-0 z-[9998] transition-transform duration-500 ${open ? "translate-x-0" : "-translate-x-full"}`}
         onMouseDown={(e)=>e.stopPropagation()} onPointerDown={(e)=>e.stopPropagation()}
       >
-        <div className="h-full w-[330px] bg-[var(--sb-bg)] text-[var(--sb-text)] border-r border-[var(--sb-border)] flex flex-col backdrop-blur-lg">
+        <div className="h-full w-[330px] bg-[var(--sb-bg)] text-[var(--sb-text)] border-r border-[var(--sb-border)] flex flex-col">
           {/* header */}
-          <div className="px-3 pt-3 pb-2 border-b border-[var(--sb-border)]">
-            <div className="text-xs uppercase tracking-wide opacity-70">Project</div>
+          <div className="px-3 pt-3 pb-3 border-b border-[var(--sb-border)]">
+            <div className="flex items-center justify-between">
+              <div className="-ml-3 flex items-center gap-2 text-[11px] uppercase tracking-[0.12em] font-bold text-[var(--text-1)]">
+                <span aria-hidden="true" className="inline-block h-[9px] w-1 shrink-0 bg-[var(--accent)]" />
+                <span>Project</span>
+              </div>
+              <button className="h-7 px-2 rounded-md text-[11px] text-[var(--text-muted)] hover:bg-[var(--sb-btn-bg-hover)] hover:text-[var(--text-1)] transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-[var(--sb-border-strong)]"
+                onClick={handleQuit} title="Quit (confirm if unsaved)">Quit</button>
+            </div>
             <div className="mt-1 grid grid-cols-[minmax(0,1fr)_20px] items-center gap-1.5 min-h-[22px]">
               <div
                 className="min-w-0 flex-1 text-[11px] leading-snug break-all opacity-80"
@@ -784,23 +818,14 @@ ${target}`);
                 aria-label="Open working folder"
                 disabled={!effectiveRoot || !isTauri()}
               >
-                <img
-                  src={ICONS.FolderOpen}
-                  alt=""
-                  width={13}
-                  height={13}
-                  draggable={false}
-                  style={{ display: "block", opacity: 0.82, pointerEvents: "none" }}
-                />
+                <FolderGlyph open className="text-current" />
               </button>
             </div>
-            <div className="mt-2 flex gap-2">
-              <button className={headerBtnClass}
-                      onClick={handleSave} title="Save (Ctrl+S)">Save</button>
-              <button className={headerBtnClass}
-                      onClick={handleSaveAs} title="Save As (Ctrl+Shift+S)">Save&nbsp;As</button>
-              <button className={`${headerBtnClass} ml-auto`}
-                      onClick={handleQuit} title="Quit (confirm if unsaved)">Quit</button>
+            <div className="mt-3 grid grid-cols-4 gap-1.5">
+              <button className={headerBtnClass} onClick={handleNew} title="New project">New</button>
+              <button className={saveBtnClass} onClick={handleSave} title="Save (Ctrl+S)">Save</button>
+              <button className={headerBtnClass} onClick={handleSaveAs} title="Save As (Ctrl+Shift+S)">Save As</button>
+              <button className={headerBtnClass} onClick={handleArchive} title="Archive — Coming in 3.0" aria-label="Archive, coming in version 3.0">Archive (3.0)</button>
             </div>
           </div>
 
@@ -824,6 +849,9 @@ ${target}`);
                 onDragOverFolder={allowDropOnFolder} onDropOnFolder={dropOnFolder}
                 onRequestRename={(abs)=>beginRename(abs)}
                 onRequestDetails={(abs)=>showDetails(abs)}
+                editingPath={editingPath}
+                onCommitRename={commitRename}
+                onCancelRename={()=>setEditingPath(null)}
                 currentOpen={currentOpenPath}
               />
             )}
@@ -854,13 +882,12 @@ ${target}`);
               {root && ctx.target.path === root.path ? (
                 <>
                   <CtxBtn onClick={()=>{setCtx(null); newFolder(ctx.target.path);}}>Create Folder</CtxBtn>
-                  <CtxBtn onClick={()=>{setCtx(null); newFile(ctx.target.path);}}>New SWON File</CtxBtn>
                 </>
               ) : (
                 <>
                   <CtxBtn onClick={()=>{setCtx(null); newFolder(ctx.target.path);}}>Create Folder</CtxBtn>
-                  <CtxBtn onClick={()=>{setCtx(null); newFile(ctx.target.path);}}>New SWON File</CtxBtn>
                   <CtxBtn onClick={()=>{setCtx(null); beginRename(ctx.target.path);}}>Rename</CtxBtn>
+                  <div aria-hidden="true" className="my-1 border-t border-[var(--sb-border)]" />
                   <CtxBtn onClick={()=>{setCtx(null); deleteFolder(ctx.target.path);}}>Delete</CtxBtn>
                 </>
               )}
@@ -869,11 +896,46 @@ ${target}`);
             <>
               <CtxBtn onClick={()=>{ setCtx(null); openAndRemember(ctx.target.path); }}>Open</CtxBtn>
               <CtxBtn onClick={()=>{ setCtx(null); beginRename(ctx.target.path); }}>Rename</CtxBtn>
+              <div aria-hidden="true" className="my-1 border-t border-[var(--sb-border)]" />
               <CtxBtn onClick={()=>{ setCtx(null); deleteFile(ctx.target.path); }}>Delete</CtxBtn>
               <CtxBtn onClick={()=>{ setCtx(null); showDetails(ctx.target.path); }}>Details</CtxBtn>
             </>
           )}
         </div>
+      )}
+
+      {(pendingDelete || deleteNotice) && createPortal(
+        <div
+          role="presentation"
+          onMouseDown={(event) => { if (event.target === event.currentTarget) { setPendingDelete(null); setDeleteNotice(null); } }}
+          style={{ position: "fixed", inset: 0, zIndex: 20000, display: "grid", placeItems: "center", padding: 20, background: "rgba(0,0,0,.34)" }}
+        >
+          <section
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="sidebar-delete-title"
+            style={{ width: "min(360px, calc(100vw - 40px))", boxSizing: "border-box", padding: 18, border: "1px solid var(--border)", borderRadius: 9, background: "var(--bg)", color: "var(--text-1)", boxShadow: "0 12px 32px rgba(0,0,0,.28)" }}
+          >
+            <div id="sidebar-delete-title" style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+              {deleteNotice ? "Notice" : "Confirm deletion"}
+            </div>
+            <div style={{ fontSize: 12, lineHeight: 1.5, color: "var(--text-2)", marginBottom: 18 }}>
+              {deleteNotice || (pendingDelete?.kind === "folder"
+                ? `Are you sure you want to delete the folder “${pendingDelete.name}”? This cannot be undone.`
+                : `Are you sure you want to delete “${pendingDelete?.name ?? ""}”? This cannot be undone.${hasDirty ? " There are unsaved changes." : ""}`)}
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+              {deleteNotice ? (
+                <button type="button" onClick={() => setDeleteNotice(null)} style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--btn-bg)", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>OK</button>
+              ) : (
+                <>
+                  <button type="button" onClick={() => setPendingDelete(null)} style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--btn-bg)", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>Cancel</button>
+                  <button type="button" onClick={confirmDelete} style={{ padding: "6px 12px", border: "1px solid color-mix(in srgb, #e35d5d 55%, transparent)", borderRadius: 5, background: "color-mix(in srgb, #e35d5d 16%, transparent)", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>Confirm</button>
+                </>
+              )}
+            </div>
+          </section>
+        </div>, document.body
       )}
 
       {/* MiniPrompt modal */}
@@ -907,61 +969,51 @@ function TreeView(props: {
   onContextMenu:(e:React.MouseEvent, t:TreeNode)=>void; onStartDrag:(e:React.DragEvent, n:TreeNode)=>void;
   onDragOverFolder:(e:React.DragEvent, n:TreeNode)=>void; onDropOnFolder:(e:React.DragEvent, n:TreeNode)=>void;
   onRequestRename:(abs:string)=>void; onRequestDetails:(abs:string)=>void;
+  editingPath: string | null; onCommitRename:(abs:string, name:string)=>void; onCancelRename:()=>void;
   currentOpen: string;
 }) {
   const { node, depth, selected } = props;
+  const [renameValue, setRenameValue] = useState(node.name);
+  const renameInputRef = useRef<HTMLInputElement | null>(null);
+  const isRenaming = props.editingPath === node.path;
 
-  const Icon = ({
-    src,
-    alt,
-    className = "",
-    tint = false,
-  }: {
-    src: string;
-    alt?: string;
-    className?: string;
-    tint?: boolean;
-  }) => {
-    if (tint) {
-      // Use PNG alpha as mask; fill with --accent
-      return (
-        <span
-          className={`inline-block w-4 h-4 ${className}`}
-          style={{
-            background: "var(--accent)",
-            WebkitMask: `url(${src}) center/contain no-repeat`,
-            mask: `url(${src}) center/contain no-repeat`,
-            display: "inline-block",
-          }}
-          aria-label={alt || ""}
-        />
-      );
+  useEffect(() => {
+    if (isRenaming) {
+      setRenameValue(node.name);
+      requestAnimationFrame(() => { renameInputRef.current?.focus(); renameInputRef.current?.select(); });
     }
-    return (
-      <span className={`w-4 h-4 inline-flex items-center justify-center ${className}`}>
-        <img
-          src={src}
-          alt={alt || ""}
-          width={16}
-          height={16}
-          draggable={false}
-          style={{ display: "block" }}
-        />
-      </span>
-    );
-  };
+  }, [isRenaming, node.name]);
+
+  const renderName = (name: string) => isRenaming ? (
+    <input
+      ref={renameInputRef}
+      value={renameValue}
+      onChange={(event) => setRenameValue(event.target.value)}
+      onClick={(event) => event.stopPropagation()}
+      onDoubleClick={(event) => event.stopPropagation()}
+      onContextMenu={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if ((event.key === "Enter" || (event as any).keyCode === 13) && !event.nativeEvent.isComposing) {
+          event.preventDefault(); event.stopPropagation(); props.onCommitRename(node.path, renameValue);
+        } else if (event.key === "Escape") {
+          event.preventDefault(); event.stopPropagation(); props.onCancelRename();
+        }
+      }}
+      className="min-w-0 flex-1 bg-transparent border-b border-[var(--accent)] text-[var(--text-1)] text-[13.3px] outline-none"
+      aria-label={`Rename ${name}`}
+    />
+  ) : <span className="text-[13.3px] truncate group-hover:text-[var(--text-1)]">{name}</span>;
 
   if (node.kind === "folder") {
     const isRoot = depth === 0 && node.name === "__ROOT__";
     const shown  = isRoot ? node.path : node.name;
     const showOpenIcon = node.open && node.children.length > 0;
-    const iconSrc = showOpenIcon ? ICONS.FolderOpen : ICONS.FolderClose;
     const isSel = selected === node.path;
 
     return (
       <div>
         <div
-          className={`group flex items-center gap-2 px-2 py-1.5 cursor-default select-none ${isSel ? "bg-[var(--sb-selected)]" : (isRoot ? "bg-[var(--sb-root-row)]" : "hover:bg-[var(--sb-hover)]")}`}
+          className={`group flex items-center gap-2 px-2 py-1.5 cursor-default select-none hover:bg-[var(--sb-hover)] hover:text-[var(--text-1)] ${isSel ? "bg-[var(--sb-selected)]" : (isRoot ? "bg-[var(--sb-root-row)]" : "")}`}
           onClick={(e)=>{ props.onSelect(node.path); props.onToggleOpen(node.path); stop(e); }}
           onContextMenu={(e)=>{ props.onSelect(node.path); props.onContextMenu(e,node); }}
           onDragOver={props.enableDragMove ? (e)=>props.onDragOverFolder(e,node) : undefined}
@@ -970,8 +1022,8 @@ function TreeView(props: {
           onDragStart={props.enableDragMove ? (e)=> props.onStartDrag(e, node) : undefined}
           title={shown}
         >
-          <Icon src={iconSrc} className={showOpenIcon ? "opacity-80" : "opacity-70"} />
-          <span className="text-sm truncate">{shown}</span>
+          <FolderGlyph open={showOpenIcon} className={showOpenIcon ? "opacity-80" : "opacity-65"} />
+          {renderName(shown)}
         </div>
         {node.open && (
           <div className="ml-4 border-l border-[var(--sb-border)]">
@@ -995,7 +1047,7 @@ function TreeView(props: {
           ? "bg-[var(--sb-selected)]"
           : isOpenNow
             ? "bg-[color-mix(in srgb, var(--accent) 14%, transparent)]"
-            : "hover:bg-[var(--sb-hover)]")
+            : "hover:bg-[var(--sb-hover)] hover:text-[var(--text-1)]")
       }
       onClick={(e)=>{ props.onSelect(node.path); stop(e); }}
       onDoubleClick={(e)=>{ props.onOpenFile?.(node.path); stop(e); }}
@@ -1004,13 +1056,12 @@ function TreeView(props: {
       onDragStart={props.enableDragMove ? (e)=>props.onStartDrag(e,node) : undefined}
       title={node.name}
     >
-      <Icon src={ICONS.Paper} className="opacity-80" tint={isOpenNow} />
-      <span
-        className="flex-1 text-left text-sm truncate"
-        style={isOpenNow ? { color: "var(--accent)" } : undefined}
-      >
-        {node.name}
-      </span>
+      <FileGlyph className={isOpenNow ? "text-[var(--accent)]" : "text-[var(--text-muted)] opacity-80"} />
+      {isRenaming ? renderName(node.name) : (
+        <span className="flex-1 text-left text-[13.3px] truncate group-hover:text-[var(--text-1)]" style={isOpenNow ? { color: "var(--accent)" } : undefined}>
+          {node.name}
+        </span>
+      )}
     </div>
   );
 }
@@ -1050,9 +1101,9 @@ function MiniPrompt({
           enterKeyHint="done"
         />
         <div className="mt-3 flex justify-end gap-2">
-          <button className="px-3 py-1.5 rounded bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)]"
+          <button className="px-3 py-1.5 rounded bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] hover:text-[var(--text-1)]"
                   onClick={onCancel}>Cancel</button>
-          <button className="px-3 py-1.5 rounded bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)]"
+          <button className="px-3 py-1.5 rounded bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)] hover:text-[var(--text-1)]"
                   onClick={commit}>OK</button>
         </div>
       </div>
@@ -1067,36 +1118,69 @@ function DetailsModal({ file, meta, onOpen, onClose }:{
   onOpen: ()=>void;
   onClose: ()=>void;
 }) {
+  const detailCell = (label: string, value: string) => (
+    <div className="min-w-0 rounded-lg border border-[var(--sb-border)] bg-[var(--sb-root-row)] px-3 py-2.5">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">{label}</div>
+      <div className="break-words text-[13px] leading-snug text-[var(--text-1)]">{value || "—"}</div>
+    </div>
+  );
+
   return (
     <>
       <div className="fixed inset-0 z-[10000] bg-[var(--sb-backdrop)]" onClick={onClose}/>
-      <div className="fixed z-[10001] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2
-                      w-[520px] max-w-[95vw] rounded-xl border border-[var(--sb-border)]
-                      bg-[var(--sb-menu-bg)] p-4 shadow-2xl">
-        <div className="text-sm font-medium mb-2">Details</div>
-        <div className="text-xs opacity-80 break-all mb-3">{file}</div>
-        {!meta ? (
-          <div className="text-sm opacity-80">Not a SWON file.</div>
-        ) : (
-          <div className="space-y-2 text-sm">
-            <div><b>Kind</b> — {meta.kind}</div>
-            <div><b>Version</b> — {String(meta.version ?? "—")}</div>
-            <div><b>Title</b> — {meta.title || "—"}</div>
-            <div><b>Saved At</b> — {meta.savedAt || "—"}</div>
-            <div className="mt-2">
-              <b>Counts</b>
-              <div className="mt-1 grid grid-cols-3 gap-2">
-                <div className="px-2 py-1 rounded bg-[var(--sb-root-row)]">OpenText: {meta.counts.openText}</div>
-                <div className="px-2 py-1 rounded bg-[var(--sb-root-row)]">Archived: {meta.counts.archivedText}</div>
-                <div className="px-2 py-1 rounded bg-[var(--sb-root-row)]">Images: {meta.counts.images}</div>
-              </div>
-            </div>
+      <div role="dialog" aria-modal="true" aria-labelledby="swon-details-title" className="fixed z-[10001] left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2
+                      w-[480px] max-w-[94vw] overflow-hidden rounded-xl border border-[var(--sb-border)]
+                      bg-[var(--sb-menu-bg)] text-[var(--sb-text)] shadow-[0_16px_40px_rgba(0,0,0,.28)]">
+        <header className="flex items-center gap-3 border-b border-[var(--sb-border)] px-5 py-4">
+          <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-[color-mix(in_srgb,var(--accent)_12%,var(--sb-bg))] text-[var(--accent)]">
+            <FileGlyph />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div id="swon-details-title" className="text-sm font-semibold leading-tight">File details</div>
+            <div className="mt-1 text-[11px] text-[var(--text-muted)]">SWON project file</div>
           </div>
-        )}
-        <div className="mt-4 flex justify-end gap-2">
-          <button className="px-3 py-1.5 rounded bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)]" onClick={onClose}>Close</button>
-          <button className="px-3 py-1.5 rounded bg-[var(--sb-btn-bg)] hover:bg-[var(--sb-btn-bg-hover)]" onClick={onOpen}>Open</button>
+          <button type="button" onClick={onClose} aria-label="Close details" className="grid h-7 w-7 place-items-center rounded-md text-[var(--text-muted)] transition-colors hover:bg-[var(--sb-btn-bg-hover)] hover:text-[var(--text-1)]">×</button>
+        </header>
+
+        <div className="space-y-4 px-5 py-4">
+          <div className="rounded-lg border border-[var(--sb-border)] bg-[var(--sb-root-row)] px-3 py-2.5">
+            <div className="mb-1 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Location</div>
+            <div className="break-all text-[11px] leading-relaxed text-[var(--text-2)]">{file}</div>
+          </div>
+
+          {!meta ? (
+            <div className="rounded-lg border border-[var(--sb-border)] px-3 py-3 text-sm text-[var(--text-2)]">Not a SWON file.</div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 gap-2">
+                {detailCell("Kind", meta.kind)}
+                {detailCell("Version", String(meta.version ?? "—"))}
+                {detailCell("Title", meta.title)}
+                {detailCell("Saved at", meta.savedAt)}
+              </div>
+
+              <section>
+                <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.08em] text-[var(--text-muted)]">Contents</div>
+                <div className="grid grid-cols-3 gap-2">
+                  {(["OpenText", "Archived", "Images"] as const).map((label, index) => {
+                    const value = [meta.counts.openText, meta.counts.archivedText, meta.counts.images][index];
+                    return (
+                      <div key={label} className="rounded-lg border border-[var(--sb-border)] bg-[var(--sb-root-row)] px-3 py-2">
+                        <div className="text-[10px] leading-tight text-[var(--text-muted)]">{label}</div>
+                        <div className="mt-1 text-base font-semibold tabular-nums text-[var(--text-1)]">{value}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </section>
+            </>
+          )}
         </div>
+
+        <footer className="flex justify-end gap-2 border-t border-[var(--sb-border)] px-5 py-3">
+          <button type="button" className="rounded-md border border-[var(--sb-border)] bg-[var(--sb-btn-bg)] px-3 py-1.5 text-xs text-[var(--text-1)] transition-colors hover:bg-[var(--sb-btn-bg-hover)]" onClick={onClose}>Close</button>
+          <button type="button" className="rounded-md border border-[color-mix(in_srgb,var(--accent)_38%,var(--sb-border))] bg-[color-mix(in_srgb,var(--accent)_12%,var(--sb-bg))] px-3 py-1.5 text-xs font-medium text-[var(--text-1)] transition-colors hover:bg-[color-mix(in_srgb,var(--accent)_20%,var(--sb-bg))]" onClick={onOpen}>Open file</button>
+        </footer>
       </div>
     </>
   );
@@ -1106,7 +1190,7 @@ function DetailsModal({ file, meta, onOpen, onClose }:{
 function CtxBtn({ children, onClick }: { children: React.ReactNode; onClick:()=>void; }) {
   return (
     <button
-      className="w-full h-[30px] text-left px-2.5 rounded-[7px] hover:bg-[var(--sb-hover)] text-[12px] font-medium tracking-[0.005em] transition-colors"
+      className="w-full h-[30px] text-left px-2.5 rounded-[7px] hover:bg-[var(--sb-hover)] hover:text-[var(--text-1)] text-[12px] font-medium tracking-[0.005em] transition-colors"
       onClick={onClick}
     >
       {children}

@@ -5,6 +5,26 @@ export type FontTriplet = {
   size: number;
 };
 
+export type ParagraphIndent = {
+  spaces: number;
+  headline: boolean;
+  body: boolean;
+  accent: boolean;
+  etc: boolean;
+};
+
+export function normalizeParagraphIndent(value: unknown): ParagraphIndent {
+  const raw = value && typeof value === "object" ? value as Partial<ParagraphIndent> : {};
+  const spaces = Number(raw.spaces);
+  return {
+    spaces: Number.isFinite(spaces) ? Math.max(1, Math.min(8, Math.round(spaces))) : 2,
+    headline: raw.headline === true,
+    body: raw.body ?? true,
+    accent: raw.accent === true,
+    etc: raw.etc === true,
+  };
+}
+
 export type Preferences = {
   workingFolder: string;
   autosave: boolean;
@@ -18,7 +38,9 @@ export type Preferences = {
     accent: FontTriplet;
     etc: FontTriplet;
   };
+  paragraphIndent: ParagraphIndent;
   accentColor: string;
+  manuscriptGapLines: number;
   bracket: {
     enable: boolean;
     style: "none" | "doubleCorner" | "doubleAngle" | "singleCorner" | "singleAngle";
@@ -33,14 +55,14 @@ export type Preferences = {
 // 👉 Preset 파일에 저장될 서브셋 (Theme 포함)
 export type SplitwriterPrefs = Pick<
   Preferences,
-  | "workingFolder"
-  | "autosave"
-  | "autosaveIntervalSec"
   | "typeface"
+  | "paragraphIndent"
   | "accentColor"
+  | "manuscriptGapLines"
   | "writingGoal"
   | "bracket"
   | "theme"
+  | "inputLocale"
 >;
 
 // UI 라벨과 내부 값(실제 font-family 스택) 분리
@@ -62,7 +84,9 @@ export const DEFAULT_PREFS: Preferences = {
     accent:   { name: SYSTEM_STACK, style: "Regular", size: 16 },
     etc:      { name: SYSTEM_STACK, style: "Regular", size: 13 },
   },
+  paragraphIndent: { spaces: 2, headline: false, body: true, accent: false, etc: false },
   accentColor: "#2AA4FF",
+  manuscriptGapLines: 1,
   bracket: { enable: false, style: "none" },
   writingGoal: { enabled: false, unit: "chars", target: 5000 },
 };

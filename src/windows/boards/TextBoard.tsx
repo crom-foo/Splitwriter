@@ -8,7 +8,7 @@ import TextToolbar, { TOOLBAR_H } from "../ui/TextToolbar";
 import { attachUndoCurly } from "../runtime/undo-snapshot";
 import { normalizeCurly, type CurlyPref } from "../runtime/curly";
 import { useWritingGoal } from "../runtime/writingGoal";
-import EchoReader from "../ui/EchoView";
+import EchoReader, { countEchoChunks } from "../ui/EchoView";
 
 export type Preset = 1 | 2 | 3 | 4;
 
@@ -31,9 +31,11 @@ export type TextBoardHandle = {
 
 type Props = {
   id: string;
+  scenario?: boolean;
 
   // Other props currently in use (compatibility)
   className?: string;
+  accentColor?: string;
   initialHTML?: string;
   /** @deprecated unused; kept for external compatibility */
   onPresetChange?: (p: Preset) => void; 
@@ -538,7 +540,7 @@ function placeCaretAtEnd(ed: HTMLElement) {
   sel.addRange(r);
 }
 
-function fragmentToPlainText(frag: DocumentFragment): string {
+function fragmentToPlainText(frag: DocumentFragment, paragraphBreak = "\n\n"): string {
   let out = "";
 
   const walk = (n: Node) => {
@@ -557,7 +559,7 @@ function fragmentToPlainText(frag: DocumentFragment): string {
     const isPara = el.matches?.(PSEL) ?? false;
     // children
     for (const ch of Array.from(el.childNodes)) walk(ch);
-    if (isPara) out += "\n\n";
+    if (isPara) out += paragraphBreak;
   };
 
   for (const ch of Array.from(frag.childNodes)) walk(ch);
@@ -904,9 +906,12 @@ function splitNodesToLineFragments(nodes: NodeListOf<ChildNode> | ChildNode[]): 
     const parts = splitNodesToLineFragments(Array.from(el.childNodes) as ChildNode[]);
     parts.forEach((part, i) => {
       if (i > 0) newLine();
-      if (!strictHasMeaningfulContent(part)) return;
+      if (!strictHasMeaningfulContent(part) && !el.hasAttribute("data-scenario-part")) return;
       const shell = el.cloneNode(false) as HTMLElement;
       stripUnsafeCloneAttrs(shell);
+      if (shell.getAttribute("data-scenario-part") === "separator") {
+        shell.setAttribute("contenteditable", "false");
+      }
       appendFragmentMoved(part, shell);
       current().appendChild(shell);
     });
@@ -932,7 +937,7 @@ function splitNodesToLineFragments(nodes: NodeListOf<ChildNode> | ChildNode[]): 
     appendInlineElement(el);
   };
 
-  Array.from(nodes as any).forEach(walk);
+  Array.from(nodes).forEach(walk);
 
   // Trim only trailing empty fragments created by block boundaries; preserve intentional blanks inside.
   while (lines.length > 1 && !strictHasMeaningfulContent(lines[lines.length - 1])) lines.pop();
@@ -994,8 +999,13 @@ function normalizeEditorParagraphsStrict(ed: HTMLElement, opts: { preserveSelect
   const saved = opts.preserveSelection ? strictTextOffsets(ed, window.getSelection?.() || null) : null;
   const paras: HTMLElement[] = [];
 
-  const addLines = (lines: DocumentFragment[], preset: Preset, align: "left" | "center" | "right" | "justify") => {
-    for (const line of lines) paras.push(makeStrictParagraphFromFragment(line, preset, align));
+  const addLines = (lines: DocumentFragment[], preset: Preset, align: "left" | "center" | "right" | "justify", scenarioBlock?: string | null, scenarioPlaceholder?: string | null) => {
+    for (const line of lines) {
+      const paragraph = makeStrictParagraphFromFragment(line, preset, align);
+      if (scenarioBlock) paragraph.setAttribute("data-scenario-block", scenarioBlock);
+      if (scenarioPlaceholder) paragraph.setAttribute("data-scenario-placeholder", scenarioPlaceholder);
+      paras.push(paragraph);
+    }
   };
 
   for (const node of Array.from(ed.childNodes)) {
@@ -1012,8 +1022,10 @@ function normalizeEditorParagraphsStrict(ed: HTMLElement, opts: { preserveSelect
     }
     const preset = getPresetOf(el.matches(PSEL) ? el : closestParagraph(el));
     const align = strictAlignOf(el);
+    const scenarioBlock = el.matches(PSEL) ? el.getAttribute("data-scenario-block") : null;
+    const scenarioPlaceholder = el.matches(PSEL) ? el.getAttribute("data-scenario-placeholder") : null;
     const lines = splitNodesToLineFragments(Array.from(el.childNodes) as ChildNode[]);
-    addLines(lines.length ? lines : [document.createDocumentFragment()], preset, align);
+    addLines(lines.length ? lines : [document.createDocumentFragment()], preset, align, scenarioBlock, scenarioPlaceholder);
   }
 
   if (!paras.length) paras.push(makeStrictTextParagraph("", 2, "justify"));
@@ -1159,7 +1171,23 @@ function insertPlainTextStrict(ed: HTMLElement, text: string): boolean {
     if (!r) return false;
   }
 
-  const clean = String(text ?? "").replace(/\r\n?/g, "\n");
+  let clean = String(text ?? "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[\u2028\u2029]/g, "\n");
+  const paragraphs = Array.from(ed.children);
+  const isEmptyBoard = paragraphs.length > 0 && paragraphs.every((paragraph) =>
+    paragraph instanceof HTMLElement &&
+    paragraph.matches(PSEL) &&
+    !strictHasMeaningfulContent(paragraph)
+  );
+  const isAtBoardStart = r.collapsed && textOffsetAt(ed, r.startContainer, r.startOffset) === 0;
+
+  // Some external sources include a leading newline in their plain-text
+  // clipboard payload (sometimes preceded by a BOM or zero-width marker).
+  // Ignore it only at the start of an otherwise empty board.
+  if (isEmptyBoard && isAtBoardStart) {
+    clean = clean.replace(/^(?:[ \t\u00a0\ufeff\u200b\u2060]*\n)+/, "");
+  }
   const lines = clean.split("\n");
 
   // Native-like behavior: single-line paste is inline text, not a new paragraph.
@@ -1315,6 +1343,7 @@ function caretAtParagraphBoundary(p: HTMLElement, range: Range, edge: "start" | 
 
 export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref) {
   const edRef = useRef<HTMLDivElement>(null);
+  const editorColRef = useRef<HTMLDivElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const nextPresetRef = useRef<Preset | undefined>(undefined);
   const spacerRef = useRef<HTMLDivElement>(null);
@@ -1333,18 +1362,109 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const [echoOpen, setEchoOpen] = React.useState(false);
   const [echoText, setEchoText] = React.useState("");
   const [echoStartAt, setEchoStartAt] = React.useState(0);
+  const [echoStartAtByMode, setEchoStartAtByMode] = React.useState<{ SMART: number; ENTER: number }>({ SMART: 0, ENTER: 0 });
   const [echoBgSources, setEchoBgSources] = React.useState<string[] | undefined>(undefined);
+  const [echoMarkerParagraphIndex, setEchoMarkerParagraphIndex] = React.useState<number | null>(null);
+  const [echoMarkerPosition, setEchoMarkerPosition] = React.useState<{ left: number; top: number } | null>(null);
+  const [scenarioDialogueAnchors, setScenarioDialogueAnchors] = React.useState<Array<{ index: number; left: number; top: number }>>([]);
+  const [scenarioFormatWidth, setScenarioFormatWidth] = React.useState(90);
   const echoStartTextOffsetRef = useRef<number | null>(null);
   const rightClickTextOffsetRef = useRef<number | null>(null);
+  const rightClickParagraphIndexRef = useRef<number | null>(null);
+  const echoMarkerParagraphIndexRef = useRef<number | null>(null);
   const enterSnapGuardUntil = React.useRef(0);
 
   const effectiveId = props.id ?? "";
+
+  useEffect(() => {
+    const ed = edRef.current;
+    const col = editorColRef.current;
+    const scroller = scrollerRef.current;
+    if (!props.scenario || !ed || !col || !scroller) {
+      setScenarioDialogueAnchors([]);
+      return;
+    }
+
+    let frame = 0;
+    const update = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        const colRect = col.getBoundingClientRect();
+        const next = Array.from(ed.querySelectorAll<HTMLElement>(`${PSEL}[data-scenario-block="dialogue"]`))
+          .map((paragraph, index) => {
+            const rect = paragraph.getBoundingClientRect();
+            return {
+              index,
+              left: rect.right - colRect.left + 6,
+              top: rect.top - colRect.top + rect.height / 2 - 11,
+            };
+          });
+        setScenarioDialogueAnchors((current) => {
+          if (current.length === next.length && current.every((item, index) =>
+            item.index === next[index]?.index && Math.abs(item.left - next[index].left) < 1 && Math.abs(item.top - next[index].top) < 1
+          )) return current;
+          return next;
+        });
+      });
+    };
+
+    const observer = new MutationObserver(update);
+    observer.observe(ed, { subtree: true, childList: true, characterData: true });
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    resizeObserver?.observe(ed);
+    resizeObserver?.observe(col);
+    scroller.addEventListener("scroll", update, { passive: true });
+    window.addEventListener("resize", update);
+    update();
+    return () => {
+      observer.disconnect();
+      resizeObserver?.disconnect();
+      scroller.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+      if (frame) cancelAnimationFrame(frame);
+    };
+  }, [props.scenario]);
+
+  const addScenarioDialogue = (dialogueIndex: number) => {
+    const ed = edRef.current;
+    if (!props.scenario || !ed) return;
+    const dialogue = ed.querySelectorAll<HTMLElement>(`${PSEL}[data-scenario-block="dialogue"]`)[dialogueIndex];
+    if (!dialogue) return;
+
+    const createBlock = (block: string, preset: Preset, align: "left" | "center" | "right" | "justify") => {
+      const paragraph = makeStrictParagraphFromFragment(document.createDocumentFragment(), preset, align);
+      paragraph.setAttribute("data-scenario-block", block);
+      paragraph.setAttribute("data-scenario-placeholder", block === "parenthetical" ? "Parenthetical (optional)" : block[0].toUpperCase() + block.slice(1));
+      return paragraph;
+    };
+    const character = createBlock("character", 3, "center");
+    const parenthetical = createBlock("parenthetical", 4, "left");
+    const nextDialogue = createBlock("dialogue", 2, "left");
+    markHistoryBoundary(ed);
+    dialogue.after(character, parenthetical, nextDialogue);
+
+    const selection = window.getSelection?.();
+    if (selection) {
+      const range = document.createRange();
+      range.setStart(character, 0);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+      ed.focus({ preventScroll: true } as any);
+    }
+    ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatOther" }));
+    props.scheduleSave?.();
+  };
 
   useEffect(() => {
     const onSetEchoStart = (event: Event) => {
       const detail = (event as CustomEvent<{ id?: string }>).detail;
       if (detail?.id === effectiveId && rightClickTextOffsetRef.current != null) {
         echoStartTextOffsetRef.current = rightClickTextOffsetRef.current;
+        const paragraphIndex = rightClickParagraphIndexRef.current;
+        echoMarkerParagraphIndexRef.current = paragraphIndex;
+        setEchoMarkerParagraphIndex(paragraphIndex);
       }
     };
     window.addEventListener("sw:echo:set-start", onSetEchoStart);
@@ -1361,6 +1481,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const [typingMode, setTypingMode] = React.useState<{ bold: boolean; italic: boolean }>({
     bold: false, italic: false,
   });
+  const [hasTextSelection, setHasTextSelection] = React.useState(false);
   const typingModeRef = useRef<InlineStyleState>({ bold: false, italic: false });
   const caretFormatOverrideRef = useRef<{ textOffset: number; state: InlineStyleState } | null>(null);
   const pendingInputFormatRef = useRef<{ start: number; state: InlineStyleState } | null>(null);
@@ -1370,6 +1491,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const ed = edRef.current;
       const range = ed ? selectionRangeIn(ed) : null;
       if (range && !range.collapsed) {
+        setHasTextSelection(range.toString().length > 0);
         caretFormatOverrideRef.current = null;
         const nodes = selectedTextNodes(ed!, range);
         const next = {
@@ -1379,6 +1501,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         typingModeRef.current = next;
         setTypingMode(next);
       } else {
+        setHasTextSelection(false);
         const override = caretFormatOverrideRef.current;
         if (range?.collapsed && ed && override &&
           override.textOffset === textOffsetAt(ed, range.startContainer, range.startOffset)) {
@@ -1418,6 +1541,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   const [twOn, setTwOn] = React.useState(false);
   const [spellOn, setSpellOn] = React.useState(false);
+  const spellOnRef = useRef(spellOn);
+  spellOnRef.current = spellOn;
 
   // Sync twOn/spellOn states to DOM attributes
   useEffect(() => {
@@ -1428,7 +1553,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       else wrap.removeAttribute("data-typewriter");
     }
     if (ed) ed.setAttribute("spellcheck", spellOn ? "true" : "false");
-    updateSpellScope();
+    if (spellOn) updateSpellScope();
+    else clearSpellScope();
   }, [twOn, spellOn]);
 
   // Observe external mutations and mirror them into local state
@@ -1460,6 +1586,93 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   }, [effectiveId]);
 
   const scrollerRef = useRef<HTMLDivElement>(null);
+
+  const updateEchoMarkerPosition = React.useCallback(() => {
+    const ed = edRef.current;
+    const editorCol = editorColRef.current;
+    const paragraphIndex = echoMarkerParagraphIndexRef.current;
+    if (!ed || !editorCol || paragraphIndex == null) {
+      setEchoMarkerPosition(null);
+      return;
+    }
+
+    const paragraphs = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
+    const paragraph = paragraphs[paragraphIndex];
+    if (!paragraph) {
+      setEchoMarkerPosition(null);
+      return;
+    }
+
+    const paragraphRect = paragraph.getBoundingClientRect();
+    let textRect: DOMRect | null = null;
+    const walker = document.createTreeWalker(paragraph, NodeFilter.SHOW_TEXT);
+    while (walker.nextNode()) {
+      const textNode = walker.currentNode as Text;
+      if (!textNode.data.length) continue;
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.setEnd(textNode, Math.min(textNode.data.length, Array.from(textNode.data)[0]?.length || 1));
+      textRect = range.getBoundingClientRect();
+      if (textRect.height > 0) break;
+      textRect = null;
+    }
+
+    const colRect = editorCol.getBoundingClientRect();
+    const targetRect = textRect || paragraphRect;
+    const lineHeight = Number.parseFloat(getComputedStyle(paragraph).lineHeight) || 18;
+    const targetHeight = targetRect.height || lineHeight;
+    const dotSize = 7;
+    const next = {
+      left: (textRect ? targetRect.left : paragraphRect.left) - colRect.left - 10,
+      top: targetRect.top - colRect.top + (targetHeight - dotSize) / 2,
+    };
+    setEchoMarkerPosition((previous) => previous &&
+      Math.abs(previous.left - next.left) < 0.5 && Math.abs(previous.top - next.top) < 0.5
+      ? previous
+      : next
+    );
+  }, []);
+
+  React.useEffect(() => {
+    if (echoMarkerParagraphIndex == null) {
+      setEchoMarkerPosition(null);
+      return;
+    }
+    const ed = edRef.current;
+    const scroller = scrollerRef.current;
+    const editorCol = editorColRef.current;
+    if (!ed || !scroller || !editorCol) return;
+
+    let frame = 0;
+    const scheduleUpdate = () => {
+      if (frame) cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        frame = 0;
+        updateEchoMarkerPosition();
+      });
+    };
+    scroller.addEventListener("scroll", scheduleUpdate, { passive: true });
+    window.addEventListener("resize", scheduleUpdate);
+    ed.addEventListener("input", scheduleUpdate, true);
+    ed.addEventListener("compositionend", scheduleUpdate, true);
+
+    const mutationObserver = new MutationObserver(scheduleUpdate);
+    mutationObserver.observe(ed, { subtree: true, childList: true, characterData: true });
+    const resizeObserver = typeof ResizeObserver !== "undefined" ? new ResizeObserver(scheduleUpdate) : null;
+    resizeObserver?.observe(scroller);
+    resizeObserver?.observe(editorCol);
+    scheduleUpdate();
+
+    return () => {
+      if (frame) cancelAnimationFrame(frame);
+      scroller.removeEventListener("scroll", scheduleUpdate);
+      window.removeEventListener("resize", scheduleUpdate);
+      ed.removeEventListener("input", scheduleUpdate, true);
+      ed.removeEventListener("compositionend", scheduleUpdate, true);
+      mutationObserver.disconnect();
+      resizeObserver?.disconnect();
+    };
+  }, [echoMarkerParagraphIndex, updateEchoMarkerPosition]);
 
   useEffect(() => {
     const sc = scrollerRef.current;
@@ -1707,7 +1920,17 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
           textOffset = textOffsetAt(ed, r.startContainer, r.startOffset);
         }
       }
-      if (textOffset != null) {
+      const startParagraphIndex = echoMarkerParagraphIndexRef.current;
+      const startAtByMode = { SMART: startAt, ENTER: startAt };
+      if (startParagraphIndex != null) {
+        // “Set Echo View Start Here” is a paragraph-level anchor: begin at the
+        // first sentence in that paragraph, regardless of the clicked character.
+        for (let index = 0; index < Math.min(startParagraphIndex, paras.length); index++) {
+          const paragraphText = paras[index].innerText || paras[index].textContent || "";
+          startAtByMode.SMART += countEchoChunks(paragraphText, "SMART");
+          startAtByMode.ENTER += countEchoChunks(paragraphText, "ENTER");
+        }
+      } else if (textOffset != null) {
         let consumed = 0;
         for (const p of paras) {
           const text = p.textContent || "";
@@ -1737,6 +1960,10 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       // 5) 상태 업데이트
       setEchoText(ed.innerText || "");
       setEchoStartAt(Math.max(0, startAt));
+      setEchoStartAtByMode({
+        SMART: Math.max(0, startAtByMode.SMART),
+        ENTER: Math.max(0, startAtByMode.ENTER),
+      });
 
       const rawBg = (window as any).__SW_ECHO_BG__ ?? null;
       let url: string | undefined;
@@ -1754,6 +1981,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         setEchoText(ed.innerText || "");
       } catch {}
       setEchoStartAt(0);
+      setEchoStartAtByMode({ SMART: 0, ENTER: 0 });
       setEchoBgSources(undefined);
       setEchoOpen(true);
     }
@@ -1804,7 +2032,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         : typingModeRef.current;
       pendingInputFormatRef.current = { start: rangeStart, state: { ...state } };
     };
-    const onInput = (event: InputEvent) => {
+    const onInput = (nativeEvent: Event) => {
+      const event = nativeEvent as InputEvent;
       if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
       if (!event.isComposing && /^insert(Text|ReplacementText)$/.test(event.inputType || "")) {
         normalizeNativeEmphasisAtCaret(ed);
@@ -1859,16 +2088,22 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       if (composing && range?.collapsed) {
         const end = textOffsetAt(ed, range.startContainer, range.startOffset);
         if (end > composing.start) {
-          applyInlineStateToTextRange(ed, composing.start, end, composing.state);
-          const caret = textPointAt(ed, end, "end");
-          if (caret && selection) {
-            const restored = document.createRange();
-            restored.setStart(caret.node, caret.offset);
-            restored.collapse(true);
-            selection.removeAllRanges();
-            selection.addRange(restored);
-            caretFormatOverrideRef.current = { textOffset: end, state: composing.state };
+          // Do not rebuild the paragraph after every IME commit. Besides being
+          // unnecessary when the composition already has the requested style,
+          // replacing its DOM here can invalidate native IME actions such as
+          // the Korean consonant-to-symbol candidate list.
+          if (!textRangeHasInlineState(ed, composing.start, end, composing.state)) {
+            applyInlineStateToTextRange(ed, composing.start, end, composing.state);
+            const caret = textPointAt(ed, end, "end");
+            if (caret && selection) {
+              const restored = document.createRange();
+              restored.setStart(caret.node, caret.offset);
+              restored.collapse(true);
+              selection.removeAllRanges();
+              selection.addRange(restored);
+            }
           }
+          caretFormatOverrideRef.current = { textOffset: end, state: composing.state };
           typingModeRef.current = composing.state;
           setTypingMode(composing.state);
         }
@@ -1990,16 +2225,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   function updateSpellScope() {
     const ed = edRef.current!;
-    if (!ed) return;
+    if (!ed || !spellOnRef.current) return;
     const paras = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
-    if (!spellOn) {
-      paras.forEach(p => {
-        p.removeAttribute("spellcheck");
-        p.style.opacity = "";
-        p.removeAttribute("data-spell-skip");
-      });
-      return;
-    }
     const r = selectionRangeIn(ed);
     const cur = r ? (closestParagraph(r.startContainer) as HTMLElement | null) : null;
     paras.forEach(p => {
@@ -2012,6 +2239,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         p.style.opacity = "0.45";
         p.setAttribute("data-spell-skip", "1");
       }
+    });
+  }
+
+  function clearSpellScope() {
+    const ed = edRef.current;
+    if (!ed) return;
+    ed.querySelectorAll<HTMLElement>(PSEL).forEach(p => {
+      p.removeAttribute("spellcheck");
+      p.style.opacity = "";
+      p.removeAttribute("data-spell-skip");
     });
   }
 
@@ -2143,38 +2380,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     }
 
     if (range.collapsed) {
-      const caret = range.cloneRange();
-      const currentOffset = textOffsetAt(ed, range.startContainer, range.startOffset);
-      const override = caretFormatOverrideRef.current;
-      const current = override && override.textOffset === currentOffset
-        ? { ...override.state }
-        : {
-            bold: isInlineFormatActive(range.startContainer as Text | HTMLElement, "bold") ||
-              document.queryCommandState("bold"),
-            italic: isInlineFormatActive(range.startContainer as Text | HTMLElement, "italic") ||
-              document.queryCommandState("italic"),
-          };
-      const next = { ...current, [format]: !current[format] };
-      const selection = window.getSelection?.();
-      focus();
-      if (selection) {
-        selection.removeAllRanges();
-        selection.addRange(caret);
-      }
-      markHistoryBoundary(ed);
-      try { document.execCommand(format === "bold" ? "bold" : "italic"); } catch {}
-      const active = window.getSelection?.();
-      const activeRange = active?.rangeCount ? active.getRangeAt(0) : null;
-      if (activeRange?.collapsed) {
-        caretFormatOverrideRef.current = {
-          textOffset: textOffsetAt(ed, activeRange.startContainer, activeRange.startOffset),
-          state: next,
-        };
-      }
-      typingModeRef.current = next;
-      setTypingMode(next);
-      emitHud(next);
-      if (lastClickPointRef.current) lastClickPointRef.current.dirty = true;
+      setHasTextSelection(false);
+      refreshTyping();
       return;
     }
 
@@ -2299,8 +2506,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
       // Bold/Italic
       if (ctrlOrMeta && !alt && !shift) {
-        if (code === "KeyB" || lower === "b") { ev.preventDefault(); ev.stopPropagation(); toggleBold(); return; }
-        if (code === "KeyI" || lower === "i") { ev.preventDefault(); ev.stopPropagation(); toggleItalic(); return; }
+        if (code === "KeyB" || lower === "b") {
+          ev.preventDefault(); ev.stopPropagation();
+          if (!selectionRangeIn(ed)?.collapsed && selectionRangeIn(ed)?.toString().length) toggleBold();
+          return;
+        }
+        if (code === "KeyI" || lower === "i") {
+          ev.preventDefault(); ev.stopPropagation();
+          if (!selectionRangeIn(ed)?.collapsed && selectionRangeIn(ed)?.toString().length) toggleItalic();
+          return;
+        }
       }
 
       // Ellipsis: Alt + M
@@ -2377,7 +2592,9 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
       const r = sel.getRangeAt(0);
       const frag = r.cloneContents();
-      const text = fragmentToPlainText(frag);
+      // Copy each editor paragraph as one plain-text line break. The default
+      // paragraph spacing remains available to internal text extraction.
+      const text = fragmentToPlainText(frag, "\n");
 
       e.preventDefault();
       e.clipboardData?.setData("text/plain", text);
@@ -2506,14 +2723,31 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
           }
         }
       } catch {}
-      rightClickTextOffsetRef.current = pointRange && ed.contains(pointRange.startContainer)
-        ? textOffsetAt(ed, pointRange.startContainer, pointRange.startOffset)
-        : (() => {
-            const activeRange = selectionRangeIn(ed);
-            return activeRange?.collapsed
-              ? textOffsetAt(ed, activeRange.startContainer, activeRange.startOffset)
-              : null;
-          })();
+      const pointIsInsideEditor = !!pointRange && ed.contains(pointRange.startContainer);
+      const activeRange = selectionRangeIn(ed);
+      const rangeForOffset = pointIsInsideEditor
+        ? pointRange
+        : activeRange?.collapsed ? activeRange : null;
+      rightClickTextOffsetRef.current = rangeForOffset
+        ? textOffsetAt(ed, rangeForOffset.startContainer, rangeForOffset.startOffset)
+        : null;
+
+      const hit = doc.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
+      const hitParagraph = hit?.closest(PSEL) as HTMLElement | null;
+      const pointParagraph = pointIsInsideEditor && pointRange
+        ? closestParagraph(pointRange.startContainer)
+        : null;
+      const activeParagraph = activeRange?.collapsed
+        ? closestParagraph(activeRange.startContainer)
+        : null;
+      const eventParagraph = closestParagraph(e.target as Node);
+      const targetParagraph = eventParagraph ||
+        (hitParagraph && ed.contains(hitParagraph) ? hitParagraph : null) ||
+        pointParagraph || activeParagraph;
+      const paragraphs = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
+      const paragraphIndex = targetParagraph ? paragraphs.indexOf(targetParagraph) : -1;
+      rightClickParagraphIndexRef.current = paragraphIndex >= 0 ? paragraphIndex : null;
+
       const off = getOffsetsIn(ed, window.getSelection?.() || null);
       if (off) lastSelRef.current = off;
 
@@ -2587,8 +2821,13 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     <div
       ref={wrapRef}
       data-board-id={effectiveId}
+      data-board-kind={props.scenario ? "scenario" : "text"}
       data-typewriter={twOn ? "1" : undefined} 
-      style={{ ...S.wrap, WebkitAppRegion: "no-drag" as any }}
+      style={{ ...S.wrap, WebkitAppRegion: "no-drag" as any, ...(props.scenario ? {
+        "--scenario-format-width": `${scenarioFormatWidth}%`,
+        "--scenario-character-width": `${Math.round(scenarioFormatWidth * 0.64)}%`,
+        "--scenario-parenthetical-width": `${Math.round(scenarioFormatWidth * 0.54)}%`,
+      } as React.CSSProperties : {}) }}
     >
       {createPortal(<WindowResizeEdges />, document.body)}
       <EchoReader
@@ -2596,13 +2835,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         onClose={() => setEchoOpen(false)}
         text={echoText}
         startAt={echoStartAt}
+        startAtByMode={echoStartAtByMode}
         preset={2}
         typefaces={props.typefaces}
+        accentColor={props.accentColor}
         bgSources={echoBgSources} 
       />
       <div style={S.toolbarBox}>
         <TextToolbar
           typingMode={typingMode}
+          hasTextSelection={hasTextSelection}
           onBold={toggleBold}
           onItalic={toggleItalic}
           onAlignLeft={() => align("left")}
@@ -2623,9 +2865,11 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
                   target: goal.goalTarget,
                   current: goal.currentCount,
                   format: goal.goalFormat,
+                  hitColor: props.accentColor || "var(--accent)",
                 }
               : undefined
           }
+          scenarioWidth={props.scenario ? { value: scenarioFormatWidth, onChange: setScenarioFormatWidth } : undefined}
         />
       </div>
       <div style={S.divider} onPointerDown={onFocusZonePointerDown} />
@@ -2635,7 +2879,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         ref={scrollerRef}
         onPointerDown={onFocusZonePointerDown}
       >
-        <div style={{ ...S.editorCol, overflowAnchor: twOn ? "none" as any : "auto" as any }}>
+        <div ref={editorColRef} style={{ ...S.editorCol, overflowAnchor: twOn ? "none" as any : "auto" as any }}>
           <div style={{ height: twOn ? 0 : 12, pointerEvents: "none" }} />
           <div
             ref={edRef}
@@ -2668,6 +2912,39 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
               // forcing focus here can reset the native caret calculation.
             }}
           />
+          {props.scenario && scenarioDialogueAnchors.map((anchor) => (
+            <button
+              key={anchor.index}
+              type="button"
+              className="scenario-add-dialogue"
+              aria-label="Add character and dialogue"
+              title="Add character and dialogue"
+              style={{ left: anchor.left, top: anchor.top }}
+              onMouseDown={(event) => {
+                event.preventDefault();
+                event.stopPropagation();
+              }}
+              onClick={() => addScenarioDialogue(anchor.index)}
+            >
+              +
+            </button>
+          ))}
+          {echoMarkerPosition && <span
+            title="Echo View starts here"
+            aria-label="Echo View start"
+            style={{
+              position: "absolute",
+              left: echoMarkerPosition.left,
+              top: echoMarkerPosition.top,
+              width: 7,
+              height: 7,
+              borderRadius: "50%",
+              background: props.accentColor || "var(--accent)",
+              boxShadow: "0 0 0 2px var(--bg)",
+              pointerEvents: "none",
+              zIndex: 2,
+            }}
+          />}
           <div ref={spacerRef} style={{ height: 0, pointerEvents: "none" }} />
         </div>
       </div>

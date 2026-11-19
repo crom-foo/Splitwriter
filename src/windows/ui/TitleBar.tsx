@@ -136,7 +136,7 @@ export default function TitleBar() {
     <div
       className="titlebar h-9 flex items-center justify-between px-2 select-none flex-shrink-0 border-b"
       style={{
-        background: "var(--topbar)",
+        background: "var(--titlebar-bg, var(--topbar))",
         borderColor: "var(--topbar-divider)",
       }}
     >

@@ -140,10 +140,10 @@ function fontCSSFromCSSVars(): string {
   const r = getComputedStyle(document.documentElement);
   const v = (name: string, fb: string) => r.getPropertyValue(name).trim() || fb;
 
-  const H = { fam: v("--type-h-family", "system-ui"), size: v("--type-h-size", "16px"), line: v("--type-h-line", "24px"), style: v("--type-h-style", "normal") };
-  const B = { fam: v("--type-b-family", "system-ui"), size: v("--type-b-size", "16px"), line: v("--type-b-line", "24px"), style: v("--type-b-style", "normal") };
-  const A = { fam: v("--type-a-family", "system-ui"), size: v("--type-a-size", "16px"), line: v("--type-a-line", "24px"), style: v("--type-a-style", "normal") };
-  const E = { fam: v("--type-e-family", "system-ui"), size: v("--type-e-size", "16px"), line: v("--type-e-line", "24px"), style: v("--type-e-style", "normal") };
+  const H = { fam: v("--type-h-family", "system-ui"), size: v("--type-h-size", "16px"), line: v("--type-h-line", "24px"), style: v("--type-h-style", "normal"), indent: v("--sw-indent-headline", "0px") };
+  const B = { fam: v("--type-b-family", "system-ui"), size: v("--type-b-size", "16px"), line: v("--type-b-line", "24px"), style: v("--type-b-style", "normal"), indent: v("--sw-indent-body", "0px") };
+  const A = { fam: v("--type-a-family", "system-ui"), size: v("--type-a-size", "16px"), line: v("--type-a-line", "24px"), style: v("--type-a-style", "normal"), indent: v("--sw-indent-accent", "0px") };
+  const E = { fam: v("--type-e-family", "system-ui"), size: v("--type-e-size", "16px"), line: v("--type-e-line", "24px"), style: v("--type-e-style", "normal"), indent: v("--sw-indent-etc", "0px") };
 
   const rule = (n: 1 | 2 | 3 | 4, o: any) =>
     `.sw-print-root [data-sw-paragraph][data-preset="${n}"],
@@ -151,6 +151,7 @@ function fontCSSFromCSSVars(): string {
         font-family:${o.fam} !important;
         font-size:${o.size} !important;
         line-height:${o.line} !important;
+        text-indent:${o.indent} !important;
         ${o.style !== "normal" ? `font-style:${o.style} !important;` : ""}
      }`;
 
@@ -201,6 +202,19 @@ function buildPrintableHTML(inner: string, opts: Required<Omit<PrintOptions, "ma
     break-inside:avoid;
     page-break-inside:avoid;
   }
+
+  .sw-print-root [data-scenario-block="scene-heading"] { margin:1.25em 0 1em; font-weight:700; text-transform:uppercase; }
+  .sw-print-root [data-scenario-block="scene-heading"]:not(:has([data-scenario-part]:not(:empty))),
+  .sw-print-root [data-scenario-block]:is(:empty, :has(> br:only-child)) { display:none; }
+  .sw-print-root [data-scenario-block="action"] { margin-bottom:1em; }
+  .sw-print-root [data-scenario-block="character"] { width:64%; margin:1em 0 0 18%; font-weight:700; text-transform:uppercase; }
+  .sw-print-root [data-scenario-block="dialogue"] { width:64%; margin:0 0 1em 18%; text-align:left !important; }
+  .sw-print-root [data-scenario-block="parenthetical"] { width:54%; margin:0 0 0 23%; text-align:left !important; }
+  .sw-print-root [data-scenario-block="parenthetical"]:has(> br:only-child) { display:none; }
+  .sw-print-root [data-scenario-part="scene-number"]:empty { display:none; }
+  .sw-print-root [data-scenario-part="scene-number"]:not(:empty)::after { content:". "; }
+  .sw-print-root [data-scenario-part="location"]::after { content:" - "; }
+  .sw-print-root [data-scenario-block="transition"] { margin:1.25em 0; font-weight:650; text-transform:uppercase; }
 
   img { max-width:100%; height:auto; }
 

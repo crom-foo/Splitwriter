@@ -26,13 +26,14 @@ export function useWritingGoal(
   const [currentCount, setCurrent] = React.useState(0);
 
   const compute = React.useCallback(() => {
+    if (!goalEnabled) return;
     const text = editorRef.current?.innerText ?? "";
     const n =
       goalMode === "chars"
         ? text.replace(/\s+/g, "").length
         : text.trim().split(/\s+/).filter(Boolean).length;
     setCurrent(n);
-  }, [editorRef, goalMode]);
+  }, [editorRef, goalEnabled, goalMode]);
 
   // 모드/설정 변경 시 재계산
   React.useEffect(() => {

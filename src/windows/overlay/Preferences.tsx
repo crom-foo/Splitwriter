@@ -5,7 +5,8 @@ import { homeDir, join } from "@tauri-apps/api/path";
 import { platform } from "@tauri-apps/api/os";
 import { open as openDialog } from "@tauri-apps/api/dialog";
 import { listPresets, loadPreset, savePreset, applyDefault, revealPresetFolder } from "../../shared/presets";
-import { DEFAULT_PREFS, type Preferences, type FontTriplet, SYSTEM_STACK, SYSTEM_LABEL } from "../../shared/defaultPrefs";
+import { DEFAULT_PREFS, normalizeParagraphIndent, type Preferences, type FontTriplet, SYSTEM_STACK, SYSTEM_LABEL } from "../../shared/defaultPrefs";
+import { createPortal } from "react-dom";
 import { emit } from "@tauri-apps/api/event";
 import { applyAccentTokens } from "../runtime/accent";
 import curlyIconUrl from "../icons/curly.png";
@@ -67,7 +68,9 @@ export function usePreferences() {
             accent: parsed.typeface?.accent ?? DEFAULT_PREFS.typeface.accent,
             etc: parsed.typeface?.etc ?? DEFAULT_PREFS.typeface.etc,
           },
+          paragraphIndent: normalizeParagraphIndent(parsed.paragraphIndent),
           accentColor: parsed.accentColor ?? DEFAULT_PREFS.accentColor,
+          manuscriptGapLines: parsed.manuscriptGapLines ?? DEFAULT_PREFS.manuscriptGapLines,
           writingGoal: parsed.writingGoal ?? DEFAULT_PREFS.writingGoal,
           bracket: parsed.bracket ?? DEFAULT_PREFS.bracket,
           theme: (parsed as any)?.theme ?? DEFAULT_PREFS.theme,
@@ -92,6 +95,7 @@ export function usePreferences() {
             accent: tf.accent ?? DEFAULT_PREFS.typeface.accent,
             etc: tf.etc ?? tf.etc2 ?? DEFAULT_PREFS.typeface.etc,
           },
+          paragraphIndent: normalizeParagraphIndent(p.paragraphIndent),
           bracket: p.bracket ? stripLegacyBrackets(p.bracket) : DEFAULT_PREFS.bracket,
           writingGoal: p.writingGoal ?? DEFAULT_PREFS.writingGoal,
         };
@@ -210,7 +214,9 @@ export function usePreferences() {
       autosave: prefs.autosave,
       autosaveIntervalSec: prefs.autosaveIntervalSec,
       typeface: prefs.typeface,
+      paragraphIndent: prefs.paragraphIndent,
       accentColor: prefs.accentColor,
+      manuscriptGapLines: prefs.manuscriptGapLines,
       writingGoal: prefs.writingGoal,
       bracket: prefs.bracket,
       theme: prefs.theme,
@@ -263,7 +269,9 @@ export function usePreferences() {
               accent: p.typeface?.accent ?? prev.typeface.accent,
               etc: p.typeface?.etc ?? prev.typeface.etc,
             }),
+            paragraphIndent: normalizeParagraphIndent(p.paragraphIndent ?? prev.paragraphIndent),
             accentColor: p.accentColor ?? prev.accentColor,
+            manuscriptGapLines: p.manuscriptGapLines ?? prev.manuscriptGapLines,
             writingGoal: p.writingGoal ?? prev.writingGoal,
             bracket: p.bracket ?? prev.bracket,
           };
@@ -382,7 +390,9 @@ export async function bootstrapPrefsOnAppStart() {
         accent: fromShadow?.typeface?.accent ?? DEFAULT_PREFS.typeface.accent,
         etc: fromShadow?.typeface?.etc ?? DEFAULT_PREFS.typeface.etc,
       },
+      paragraphIndent: normalizeParagraphIndent(fromShadow?.paragraphIndent),
       accentColor: fromShadow?.accentColor ?? DEFAULT_PREFS.accentColor,
+      manuscriptGapLines: fromShadow?.manuscriptGapLines ?? DEFAULT_PREFS.manuscriptGapLines,
       writingGoal: fromShadow?.writingGoal ?? DEFAULT_PREFS.writingGoal,
       bracket: fromShadow?.bracket ?? DEFAULT_PREFS.bracket,
       // Merge other optional fields (e.g., theme/language) here when needed
@@ -399,7 +409,9 @@ export async function bootstrapPrefsOnAppStart() {
         autosave: merged.autosave,
         autosaveIntervalSec: merged.autosaveIntervalSec,
         typeface: merged.typeface,
+        paragraphIndent: merged.paragraphIndent,
         accentColor: merged.accentColor,
+        manuscriptGapLines: merged.manuscriptGapLines,
         writingGoal: merged.writingGoal,
         bracket: merged.bracket,
         theme: merged.theme,
@@ -441,6 +453,10 @@ const STRINGS = {
     autosaveRange: "Recommended 10–600",
     fonts: "Typeface Presets (v4)",
     fontsHint: "Ctrl/Cmd + 1·2·3·4 to switch (Headline / Body / Accent / Etc)",
+    indentTitle: "Paragraph Indentation",
+    indentDesc: "Indent the first line of paragraphs using checked typeface presets.",
+    indentWidth: "Indent width (spaces)",
+    indentPreset: "Indent",
     headline: "Headline",
     body: "Body",
     accent: "Accent",
@@ -613,29 +629,214 @@ function Select({
   className = "",
   ...rest
 }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  const options = React.Children.toArray(children)
+    .filter(React.isValidElement)
+    .map((child) => {
+      const props = child.props as React.OptionHTMLAttributes<HTMLOptionElement>;
+      return {
+        value: String(props.value ?? ""),
+        label: props.children,
+        disabled: !!props.disabled,
+        title: props.title,
+      };
+    });
+  const [open, setOpen] = React.useState(false);
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const [menuRect, setMenuRect] = React.useState<React.CSSProperties | null>(null);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+  const typeaheadRef = React.useRef("");
+  const typeaheadTimerRef = React.useRef<number | null>(null);
+  const listId = React.useId();
+  const selectedIndex = Math.max(0, options.findIndex((option) => option.value === String(value ?? "")));
+  const activeOption = options[activeIndex] ?? options[selectedIndex];
+
+  const updateMenuPosition = React.useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const estimatedHeight = Math.min(320, Math.max(40, options.length * 36 + 8));
+    const below = Math.max(0, window.innerHeight - rect.bottom - 8);
+    const above = Math.max(0, rect.top - 8);
+    const openAbove = below < Math.min(estimatedHeight, 220) && above > below;
+    const maxHeight = Math.max(64, Math.min(320, openAbove ? above : below));
+    const width = Math.min(Math.max(rect.width, 180), window.innerWidth - 16);
+    const left = Math.max(8, Math.min(rect.left, window.innerWidth - width - 8));
+    const top = openAbove
+      ? Math.max(8, rect.top - Math.min(estimatedHeight, maxHeight) - 4)
+      : rect.bottom + 4;
+    setMenuRect({ position: "fixed", zIndex: 100000, left, top, width, maxHeight });
+  }, [options.length]);
+
+  React.useLayoutEffect(() => {
+    if (open) updateMenuPosition();
+  }, [open, updateMenuPosition]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const closeOnOutside = (event: PointerEvent) => {
+      const target = event.target as Node | null;
+      if (target && !triggerRef.current?.contains(target) && !menuRef.current?.contains(target)) setOpen(false);
+    };
+    const reposition = () => updateMenuPosition();
+    document.addEventListener("pointerdown", closeOnOutside, true);
+    window.addEventListener("resize", reposition);
+    window.addEventListener("scroll", reposition, true);
+    return () => {
+      document.removeEventListener("pointerdown", closeOnOutside, true);
+      window.removeEventListener("resize", reposition);
+      window.removeEventListener("scroll", reposition, true);
+      if (typeaheadTimerRef.current) window.clearTimeout(typeaheadTimerRef.current);
+    };
+  }, [open, updateMenuPosition]);
+
+  React.useEffect(() => {
+    if (!open) return;
+    const active = menuRef.current?.querySelector<HTMLElement>(`#${CSS.escape(`${listId}-option-${activeIndex}`)}`);
+    active?.scrollIntoView({ block: "nearest" });
+  }, [open, activeIndex, listId]);
+
+  const moveActive = (start: number, delta: number) => {
+    if (!options.length) return;
+    let next = start;
+    for (let i = 0; i < options.length; i += 1) {
+      next = (next + delta + options.length) % options.length;
+      if (!options[next].disabled) {
+        setActiveIndex(next);
+        return;
+      }
+    }
+  };
+
+  const choose = (index: number) => {
+    const option = options[index];
+    if (!option || option.disabled) return;
+    onChange?.({ target: { value: option.value }, currentTarget: { value: option.value } } as React.ChangeEvent<HTMLSelectElement>);
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+
+  const onTriggerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      if (!open) {
+        setActiveIndex(selectedIndex);
+        setOpen(true);
+      } else {
+        moveActive(activeIndex, event.key === "ArrowDown" ? 1 : -1);
+      }
+      return;
+    }
+    if (event.key === "Home" || event.key === "End") {
+      event.preventDefault();
+      const index = event.key === "Home" ? 0 : options.length - 1;
+      setActiveIndex(index);
+      setOpen(true);
+      return;
+    }
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      if (open) choose(activeIndex);
+      else {
+        setActiveIndex(selectedIndex);
+        setOpen(true);
+      }
+      return;
+    }
+    if (event.key === "Escape" && open) {
+      event.preventDefault();
+      setOpen(false);
+      return;
+    }
+    if (event.key.length === 1 && !event.ctrlKey && !event.metaKey && !event.altKey) {
+      typeaheadRef.current += event.key.toLocaleLowerCase();
+      if (typeaheadTimerRef.current) window.clearTimeout(typeaheadTimerRef.current);
+      typeaheadTimerRef.current = window.setTimeout(() => { typeaheadRef.current = ""; }, 700);
+      const index = options.findIndex((option) => !option.disabled && String(option.label ?? "").toLocaleLowerCase().startsWith(typeaheadRef.current));
+      if (index >= 0) {
+        setActiveIndex(index);
+        setOpen(true);
+      }
+    }
+  };
+
   return (
-    <select
-      {...rest}
-      value={value}
-      onChange={onChange}
-      disabled={disabled}
-      className="w-full rounded-lg border px-2 py-2 text-sm outline-none"
-      style={{
-        background: "var(--select-bg, rgba(255,255,255,0.05))",
-        color: "var(--select-fg, #fff)",
-        borderColor: "var(--select-border, rgba(255,255,255,0.10))",
-        ...style,
-      }}
-    >
-      {children}
-    </select>
+    <>
+      <button
+        {...rest}
+        ref={triggerRef}
+        type="button"
+        role="combobox"
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-activedescendant={open ? `${listId}-option-${activeIndex}` : undefined}
+        disabled={disabled}
+        className={`w-full rounded-lg border px-2 py-2 text-sm outline-none ${className}`}
+        onClick={() => {
+          if (open) setOpen(false);
+          else {
+            setActiveIndex(selectedIndex);
+            setOpen(true);
+          }
+        }}
+        onKeyDown={onTriggerKeyDown}
+        style={{
+          minHeight: 38,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 10,
+          textAlign: "left",
+          background: "var(--select-bg, rgba(255,255,255,0.05))",
+          color: "var(--select-fg, #fff)",
+          borderColor: "var(--select-border, rgba(255,255,255,0.10))",
+          cursor: disabled ? "not-allowed" : "pointer",
+          opacity: disabled ? 0.55 : 1,
+          ...style,
+        }}
+      >
+        <span className="min-w-0 truncate">{options[selectedIndex]?.label ?? ""}</span>
+        <svg aria-hidden="true" width="12" height="12" viewBox="0 0 12 12" style={{ flex: "0 0 auto", opacity: .78 }}>
+          <path d="m2.2 4.3 3.8 3.5 3.8-3.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+        </svg>
+      </button>
+      {open && menuRect && createPortal(
+        <div
+          ref={menuRef}
+          id={listId}
+          role="listbox"
+          aria-label={(rest as any)["aria-label"] || "Options"}
+          className="prefs-dropdown-list"
+          style={menuRect}
+        >
+          {options.map((option, index) => (
+            <div
+              key={`${option.value}-${index}`}
+              id={`${listId}-option-${index}`}
+              role="option"
+              aria-selected={String(value ?? "") === option.value}
+              aria-disabled={option.disabled || undefined}
+              title={option.title}
+              className={`prefs-dropdown-option${index === activeIndex ? " is-active" : ""}`}
+              onMouseEnter={() => !option.disabled && setActiveIndex(index)}
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => choose(index)}
+              style={{ opacity: option.disabled ? .45 : 1, cursor: option.disabled ? "not-allowed" : "pointer" }}
+            >
+              {option.label}
+            </div>
+          ))}
+        </div>,
+        document.body
+      )}
+    </>
   );
 }
 const Option: React.FC<React.OptionHTMLAttributes<HTMLOptionElement>> = (p) => (
   <option
     {...p}
     style={{
-      background: "var(--select-popup, #151518)",
+      background: "var(--select-popup, #383d45)",
       color: "var(--select-popup-fg, #fff)",
     }}
   />
@@ -769,10 +970,14 @@ function collectFonts(entry: any, dict: FontDict) {
 
 export function PreferenceModal({
   prefs,
+  autosaveOverride = null,
+  onAutosaveToggle,
   onChange,
   onClose,
 }: {
   prefs: Preferences;
+  autosaveOverride?: boolean | null;
+  onAutosaveToggle?: (enabled: boolean) => void;
   onChange: (next: Preferences) => void;
   onClose: () => void;
 }) {
@@ -824,15 +1029,14 @@ export function PreferenceModal({
 
   function toUserPreset(p: Preferences) {
     return {
-      workingFolder: p.workingFolder,
-      autosave: p.autosave,
-      autosaveIntervalSec: p.autosaveIntervalSec,
       typeface: p.typeface,
+      paragraphIndent: p.paragraphIndent,
       accentColor: p.accentColor,
+      manuscriptGapLines: p.manuscriptGapLines,
       writingGoal: p.writingGoal,
       bracket: p.bracket,
       theme: p.theme,
-      inputLocale: (p as any).inputLocale,
+      inputLocale: p.inputLocale,
     };
   }
 
@@ -962,7 +1166,7 @@ export function PreferenceModal({
       if (!ok) return;
     }
 
-    await savePreset(trimmed, toUserPreset(prefs) as any);
+    await savePreset(trimmed, toUserPreset(prefs));
     try {
       setPresetItems(await listPresets());
     } catch {}
@@ -976,14 +1180,8 @@ export function PreferenceModal({
     const merged = { ...(prefs as any), ...(base as any) } as Preferences;
     merged.typeface = normalizeTypeface(merged.typeface);
 
-    // 공장 초기화:
-    //  - Dark 테마 + 기본 값으로 되돌리고
-    //  - workingFolder 는 비워서 안전하게
-    //  - Theme / Accent 토큰을 즉시 DOM에 반영
-    const next: Preferences = {
-      ...(merged as Preferences),
-      workingFolder: "",
-    };
+    // Restore writing-profile defaults while preserving machine-specific and autosave settings.
+    const next: Preferences = merged;
 
     applyThemeDom(next.theme);
     applyAccentTokens(validateHex(next.accentColor) || FALLBACK_ACCENT);
@@ -1020,6 +1218,7 @@ export function PreferenceModal({
   const setBracket = (patch: Partial<Preferences["bracket"]>) => set({ bracket: { ...prefs.bracket, ...patch } });
 
   const interval = Math.max(10, Math.min(600, Number(prefs.autosaveIntervalSec) || 10));
+  const autosaveActive = autosaveOverride ?? prefs.autosave;
   const autosaveOptions = useMemo(() => {
     const set = new Set<number>(AUTOSAVE_INTERVAL_CHOICES);
     set.add(interval);
@@ -1053,7 +1252,7 @@ export function PreferenceModal({
       r.style.setProperty("--select-bg", "rgba(255,255,255,0.05)");
       r.style.setProperty("--select-fg", "#f9fafb");
       r.style.setProperty("--select-border", "rgba(255,255,255,0.16)");
-      r.style.setProperty("--select-popup", "#151518");
+      r.style.setProperty("--select-popup", "#383d45");
       r.style.setProperty("--select-popup-fg", "#f9fafb");
     } else {
       // light
@@ -1096,7 +1295,7 @@ export function PreferenceModal({
   return (
     <>
       <div className="fixed inset-0 z-50">
-        <div className="absolute inset-0 bg-black/60" onClick={onClose} />
+        <div className="absolute inset-0" style={{ background: "rgba(0,0,0,.34)" }} onClick={onClose} />
         <div className="absolute inset-0 flex items-center justify-center p-4">
           <div
             className="w-[880px] max-w-[95vw] rounded-2xl border shadow-2xl overflow-hidden"
@@ -1173,7 +1372,8 @@ export function PreferenceModal({
                       fontSize: 12,
                       lineHeight: "16px",
                     }}
-                    title="Input language (System/Auto recommended)"
+                    title="Writing / Spell-check Language"
+                    aria-label="Writing / Spell-check Language"
                   >
                     {INPUT_LOCALES.map((opt) => (
                       <Option key={opt.id} value={opt.id}>
@@ -1282,6 +1482,10 @@ export function PreferenceModal({
                 color: "var(--prefs-text-main)",
               }}
             >
+              <p className="mx-auto -mt-2 text-xs" style={{ ...sharedMax, color: "var(--prefs-text-sub, var(--text-2))" }}>
+                Writing / Spell-check Language sets a document language hint. Keyboard layout follows your operating system settings.
+              </p>
+
               {/* Working Folder */}
               <section className="space-y-2 mx-auto" style={sharedMax}>
                 <label className="flex items-center gap-2 text-sm">
@@ -1323,23 +1527,26 @@ export function PreferenceModal({
                     <span>{t.autosave}</span>
                   </label>
                   <p className="text-xs mt-1" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
-                    {t.autosaveDesc}
+                    {autosaveOverride === false ? "Autosave is paused for this file." : t.autosaveDesc}
                   </p>
                 </div>
                 <button
                   role="switch"
-                  aria-checked={prefs.autosave}
-                  onClick={() => set({ autosave: !prefs.autosave })}
+                  aria-checked={autosaveActive}
+                  onClick={() => {
+                    if (autosaveOverride !== null) onAutosaveToggle?.(!autosaveActive);
+                    else set({ autosave: !prefs.autosave });
+                  }}
                   className="relative h-6 w-12 rounded-full border transition-colors"
                   style={{
-                    backgroundColor: prefs.autosave ? hexA(ACC, 0.25) : "rgba(255,255,255,0.05)",
-                    borderColor: prefs.autosave ? hexA(ACC, 0.4) : "rgba(255,255,255,0.15)",
+                    backgroundColor: autosaveActive ? hexA(ACC, 0.25) : "rgba(255,255,255,0.05)",
+                    borderColor: autosaveActive ? hexA(ACC, 0.4) : "rgba(255,255,255,0.15)",
                   }}
-                  title={prefs.autosave ? "ON" : "OFF"}
+                  title={autosaveActive ? "ON" : "OFF"}
                 >
                   <span
                     className="absolute top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-white shadow transition-[left]"
-                    style={{ left: prefs.autosave ? 28 : 4 }}
+                    style={{ left: autosaveActive ? 28 : 4 }}
                   />
                 </button>
               </section>
@@ -1358,7 +1565,7 @@ export function PreferenceModal({
                     const n = Math.max(10, Math.min(600, Number(e.target.value) || 10));
                     set({ autosaveIntervalSec: n });
                   }}
-                  disabled={!prefs.autosave}
+                  disabled={!autosaveActive}
                   style={{ width: 140 }}
                 >
                   {autosaveOptions.map((sec) => {
@@ -1374,6 +1581,32 @@ export function PreferenceModal({
 
               <hr className="border-t" style={{ borderColor: "var(--divider)" }} />
 
+              {/* Paragraph indentation */}
+              <section className="space-y-2 mx-auto" style={sharedMax}>
+                <label className="flex items-center gap-2 text-sm">
+                  <span>{t.indentTitle}</span>
+                </label>
+                <p className="text-xs" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
+                  {t.indentDesc}
+                </p>
+                <div className="grid grid-cols-[1fr_140px] items-center gap-3">
+                  <label className="text-xs" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
+                    {t.indentWidth}
+                  </label>
+                  <Select
+                    value={String(prefs.paragraphIndent.spaces)}
+                    onChange={(e) => set({ paragraphIndent: { ...prefs.paragraphIndent, spaces: Number(e.target.value) } })}
+                    aria-label={t.indentWidth}
+                  >
+                    {Array.from({ length: 8 }, (_, index) => index + 1).map((spaces) => (
+                      <Option key={spaces} value={String(spaces)}>{spaces}</Option>
+                    ))}
+                  </Select>
+                </div>
+              </section>
+
+              <hr className="border-t" style={{ borderColor: "var(--divider)" }} />
+
               {/* Typeface Presets */}
               <section className="space-y-2 mx-auto" style={sharedMax}>
                 <label className="flex items-center gap-2 text-sm">
@@ -1384,6 +1617,14 @@ export function PreferenceModal({
                   {t.fontsHint}
                 </p>
 
+                <div className="grid grid-cols-[72px_44px_260px_200px_120px] items-center gap-2 text-[11px]" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
+                  <span />
+                  <span className="text-center">{t.indentPreset}</span>
+                  <span />
+                  <span />
+                  <span />
+                </div>
+
                 {(["headline", "body", "accent", "etc"] as const).map((key) => {
                   const label =
                     key === "headline" ? t.headline : key === "body" ? t.body : key === "accent" ? t.accent : t.etc;
@@ -1393,11 +1634,20 @@ export function PreferenceModal({
                   return (
                     <div
                       key={key}
-                      className="grid grid-cols-[96px_280px_220px_120px] items-center gap-2"
+                      className="grid grid-cols-[72px_44px_260px_200px_120px] items-center gap-2"
                     >
                       <div className="text-xs" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
                         {label}
                       </div>
+
+                      <input
+                        type="checkbox"
+                        checked={prefs.paragraphIndent[key]}
+                        aria-label={`Indent ${label} paragraphs`}
+                        title={`Indent paragraphs using ${label}`}
+                        onChange={(e) => set({ paragraphIndent: { ...prefs.paragraphIndent, [key]: e.target.checked } })}
+                        style={{ accentColor: ACC, justifySelf: "center", width: 15, height: 15, cursor: "pointer" }}
+                      />
 
                       <Select
                         value={triplet.name}
@@ -1568,17 +1818,35 @@ export function PreferenceModal({
 
               <hr className="border-t" style={{ borderColor: "var(--divider)" }} />
 
+              {/* Manuscript view board spacing */}
+              <section className="space-y-2 mx-auto" style={sharedMax}>
+                <label htmlFor="manuscript-gap-lines" className="text-sm">Blank Lines Between Boards (Manuscript View)</label>
+                <p className="text-xs" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
+                  Set the number of blank lines between boards in the Manuscript View.
+                </p>
+                <input
+                  id="manuscript-gap-lines"
+                  type="number"
+                  min={0}
+                  max={50}
+                  step={1}
+                  value={prefs.manuscriptGapLines}
+                  onChange={(e) => {
+                    const value = Number(e.target.value);
+                    if (Number.isInteger(value) && value >= 0 && value <= 50) set({ manuscriptGapLines: value });
+                  }}
+                  className="w-20 rounded-md border px-3 py-2 text-sm"
+                  style={{ borderColor: "var(--border)", background: "var(--input-bg, var(--bg))", color: "var(--text-1)", accentColor: ACC }}
+                  aria-label="Blank lines between boards in Manuscript View"
+                />
+              </section>
+
+              <hr className="border-t" style={{ borderColor: "var(--divider)" }} />
+
               {/* Writing goal */}
               <section className="space-y-2 mx-auto" style={sharedMax}>
                 <label className="flex items-center gap-2 text-sm">
-                  {/* 여기 span만 교체 */}
-                  <span
-                    className="inline-block w-3 h-3 rounded"
-                    style={{
-                      backgroundColor: hexA(ACC, 0.75),           // 액센트 기반 부드러운 점
-                      boxShadow: `0 0 0 1px ${hexA(ACC, 0.40)}`,  // 살짝 테두리 줘서 배경에서 안 묻히게
-                    }}
-                  />
+                  <span className="inline-block w-3 h-3 rounded" style={{ backgroundColor: ACC }} />
                   <span>{t.goalTitle}</span>
                 </label>
                 <p

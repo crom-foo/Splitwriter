@@ -18,7 +18,7 @@ _For all creators — past, present, and future._
 Splitwriter is a focused writing tool built to make creative work easier.  
 Instead of fighting with a heavy word processor, you just open Splitwriter and start writing.
 
-Current Version: **v1.2.0-portable (Windows x64)**
+Current Version: **v2.0 Beta 3 (Portable, Windows x64)**
 
 UI language: **English**  
 Typing input (IME/keyboard): **Auto (System)** + manual options (e.g. English, 한국어, 日本語, 中文, Русский, …)
@@ -125,14 +125,7 @@ No installation is required.
 
 ## If the App Does Not Start
 
-Try running the bundled WebView2 installers in this order:
-
-1. `runtime/MicrosoftEdgeWebview2Setup.exe`  
-   - **Recommended** (online installer, requires internet connection)
-2. `runtime/MicrosoftEdgeWebView2RuntimeInstallerX64.exe`  
-   - **Offline option** if the first one fails
-
-After installation, launch `Splitwriter.exe` again.
+Install the Evergreen WebView2 Runtime from [Microsoft's download page](https://developer.microsoft.com/microsoft-edge/webview2/), then launch `Splitwriter.exe` again.
 
 ---
 
