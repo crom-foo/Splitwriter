@@ -629,6 +629,7 @@ function Select({
   className = "",
   ...rest
 }: React.SelectHTMLAttributes<HTMLSelectElement>) {
+  const triggerProps = rest as unknown as React.ButtonHTMLAttributes<HTMLButtonElement>;
   const options = React.Children.toArray(children)
     .filter(React.isValidElement)
     .map((child) => {
@@ -762,7 +763,7 @@ function Select({
   return (
     <>
       <button
-        {...rest}
+        {...triggerProps}
         ref={triggerRef}
         type="button"
         role="combobox"

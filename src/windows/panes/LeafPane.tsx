@@ -20,11 +20,15 @@ type Props = {
     pt: { x: number; y: number },
     source?: "handle" | "content"
   ) => void;
-  onRequestSplit?: (leafId: string, dir: "horizontal" | "vertical") => void;
+  onRequestSplit?: (leafId: string, dir: "horizontal" | "vertical", duplicate?: boolean) => void;
   onActivate?: () => void;
   onRequestSwap?: (sourceLeafId: string, targetLeafId: string) => void;
+  onRequestDuplicatePane?: (sourceLeafId: string, targetLeafId: string) => void;
   onSwapTargetChange?: (targetLeafId: string | null) => void;
+  onDuplicateTargetChange?: (targetLeafId: string | null) => void;
   swapTargetLeafId?: string | null;
+  duplicateTargetLeafId?: string | null;
+  canDuplicate?: boolean;
   accentColor?: string;
   dropGroup?: BoardGroup | "any";
   onDropNavigatorBoard?: (item: NavigatorBoardDrag) => void;
@@ -38,8 +42,12 @@ export default function LeafPane({
   onRequestSplit,
   onActivate,
   onRequestSwap,
+  onRequestDuplicatePane,
   onSwapTargetChange,
+  onDuplicateTargetChange,
   swapTargetLeafId,
+  duplicateTargetLeafId,
+  canDuplicate = false,
   accentColor,
   dropGroup,
   onDropNavigatorBoard,
@@ -49,6 +57,9 @@ export default function LeafPane({
   const [start, setStart] = useState<{ x: number; y: number } | null>(null);
   const [dir, setDir] = useState<"horizontal" | "vertical" | null>(null);
   const swapTargetRef = React.useRef<string | null>(null);
+  const swapTargetKindRef = React.useRef<string | null>(null);
+  const duplicateModeRef = React.useRef(false);
+  const [duplicateMode, setDuplicateMode] = useState(false);
 
   const onDropNavigator = (event: React.DragEvent<HTMLDivElement>) => {
     if (!dropGroup) return;
@@ -63,6 +74,13 @@ export default function LeafPane({
   useEffect(() => {
     if (!dragging) return;
 
+    const syncDuplicateMode = (enabled: boolean) => {
+      const allowed = enabled && canDuplicate && (!swapTargetRef.current || swapTargetKindRef.current === "text" || swapTargetKindRef.current === "scenario");
+      duplicateModeRef.current = allowed;
+      setDuplicateMode(allowed);
+      onDuplicateTargetChange?.(allowed ? swapTargetRef.current : null);
+    };
+
     const onMove = (e: MouseEvent) => {
       if (!start) return;
       const p = { x: e.clientX, y: e.clientY };
@@ -70,10 +88,12 @@ export default function LeafPane({
       const targetLeafId = targetEl?.dataset.swLeafId && targetEl.dataset.swLeafId !== leafId
         ? targetEl.dataset.swLeafId
         : null;
+      swapTargetKindRef.current = targetLeafId ? targetEl?.dataset.swLeafKind || null : null;
       if (swapTargetRef.current !== targetLeafId) {
         swapTargetRef.current = targetLeafId;
         onSwapTargetChange?.(targetLeafId);
       }
+      syncDuplicateMode(e.ctrlKey);
       const dx = p.x - start.x;
       const dy = p.y - start.y;
       const adx = Math.abs(dx);
@@ -82,24 +102,35 @@ export default function LeafPane({
       setDir(targetLeafId || (adx < 6 && ady < 6) ? null : ady > adx ? "horizontal" : "vertical");
     };
 
-    const onUp = () => {
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Control") syncDuplicateMode(true); };
+    const onKeyUp = (event: KeyboardEvent) => { if (event.key === "Control") syncDuplicateMode(false); };
+    const onUp = (event: MouseEvent) => {
+      const duplicate = duplicateModeRef.current || (event.ctrlKey && canDuplicate && (!swapTargetRef.current || swapTargetKindRef.current === "text" || swapTargetKindRef.current === "scenario"));
       setDragging(false);
       const targetLeafId = swapTargetRef.current;
-      if (targetLeafId) onRequestSwap?.(leafId, targetLeafId);
-      else if (dir) onRequestSplit?.(leafId, dir);
+      if (targetLeafId && duplicate) onRequestDuplicatePane?.(leafId, targetLeafId);
+      else if (targetLeafId) onRequestSwap?.(leafId, targetLeafId);
+      else if (dir) onRequestSplit?.(leafId, dir, duplicate);
       swapTargetRef.current = null;
+      swapTargetKindRef.current = null;
       onSwapTargetChange?.(null);
+      syncDuplicateMode(false);
+      onDuplicateTargetChange?.(null);
       setDir(null);
       setStart(null);
     };
 
     window.addEventListener("mousemove", onMove, true);
     window.addEventListener("mouseup", onUp, true);
+    window.addEventListener("keydown", onKeyDown, true);
+    window.addEventListener("keyup", onKeyUp, true);
     return () => {
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("mouseup", onUp, true);
+      window.removeEventListener("keydown", onKeyDown, true);
+      window.removeEventListener("keyup", onKeyUp, true);
     };
-  }, [dragging, dir, leafId, onRequestSplit, onRequestSwap, onSwapTargetChange, start]);
+  }, [dragging, dir, leafId, canDuplicate, onRequestSplit, onRequestSwap, onRequestDuplicatePane, onSwapTargetChange, onDuplicateTargetChange, start]);
 
   // Drag hint overlay: draws a 2px guide line and a small "H"/"V" chip; pointer-events: none.
   const renderPreview = () => {
@@ -160,7 +191,7 @@ export default function LeafPane({
             boxShadow: "0 8px 24px rgba(0,0,0,0.45)",
           }}
         >
-          {dir === "horizontal" ? "H" : "V"}
+          {duplicateMode ? "Duplicate" : dir === "horizontal" ? "H" : "V"}
         </div>
       </div>
     );
@@ -248,13 +279,13 @@ export default function LeafPane({
             pointerEvents: "none",
           }}
         >
-          Swap
+          {duplicateTargetLeafId === leafId ? "Duplicate" : "Swap"}
         </div>
       )}
 
       {/* Pane handle: drag within this pane to split, onto another pane to swap. */}
       {kind !== "manuscript" && <div
-        title="Drag to split or swap panes"
+        title="Drag to split or swap panes; hold Ctrl to duplicate a TextBoard"
         onContextMenu={(e) => {
           if (!onOpenMenu) return;
           e.preventDefault();

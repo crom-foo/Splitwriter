@@ -32,6 +32,8 @@ export type TextBoardHandle = {
 type Props = {
   id: string;
   scenario?: boolean;
+  /** True when this pane reaches the app's outer right edge. */
+  touchesWindowRightEdge?: boolean;
 
   // Other props currently in use (compatibility)
   className?: string;
@@ -572,7 +574,8 @@ function fragmentToPlainText(frag: DocumentFragment, paragraphBreak = "\n\n"): s
 }
 
 // === Ellipsis ===
-const ELLIPSIS_STR = "…"; // If you prefer three dots, change to "..."
+const ELLIPSIS_STR = "⋯"; // Midline horizontal ellipsis (U+22EF)
+const MIDDLE_DOT_STR = "·"; // Middle dot (U+00B7)
 
 function insertEllipsisAtSelection(root: HTMLElement, schedule?: () => void, onChange?: (h: string)=>void, onNudge?: ()=>void) {
   const sel = window.getSelection?.();
@@ -766,7 +769,7 @@ async function resolveEchoBgUrl(raw: string | null): Promise<string | undefined>
 /* ─────────────────────────────────────────────
    Echo tokenization helpers (caret → startAt)
    ───────────────────────────────────────────── */
-const END_PUNCT = /[\.!?…]+/;
+const END_PUNCT = /[\.!?…⋯]+/;
 const CLOSERS = `”’"'\\)\\]\\}〉》」『】>`;
 function tokenCountOfParagraphText(src: string): number {
   const text = (src || "").replace(/\r\n/g, "\n").replace(/\t/g, " ").trim();
@@ -2530,6 +2533,19 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         return;
       }
 
+      // Middle dot: Alt + Period
+      if (!ctrlOrMeta && alt && !shift && (code === "Period" || key === ".")) {
+        ev.preventDefault(); ev.stopPropagation();
+        insertRawTextAtSelection(
+          ed,
+          MIDDLE_DOT_STR,
+          props.scheduleSave,
+          (h) => props.onChange?.(h),
+          () => { if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true)); }
+        );
+        return;
+      }
+
       const alignKey =
         code === "KeyL" || lower === "l" ? "left" :
         code === "KeyC" || lower === "c" ? "center" :
@@ -2875,7 +2891,11 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       <div style={S.divider} onPointerDown={onFocusZonePointerDown} />
 
       <div
-        style={{ ...S.editorWrap, overflowAnchor: twOn ? "none" as any : "auto" as any }}
+        style={{
+          ...S.editorWrap,
+          right: props.touchesWindowRightEdge && !props.scenario ? 10 : 0,
+          overflowAnchor: twOn ? "none" as any : "auto" as any,
+        }}
         ref={scrollerRef}
         onPointerDown={onFocusZonePointerDown}
       >

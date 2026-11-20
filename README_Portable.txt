@@ -1,4 +1,4 @@
-Splitwriter 2.0 Portable (Beta 3)
+Splitwriter 2.0 Portable (Beta 4)
 Windows x64
 
 GET STARTED

@@ -1,4 +1,18 @@
-Splitwriter 2.0 Portable (Beta 3) — Windows x64
+Splitwriter 2.0 Portable (Beta 4) — Windows x64
+
+BETA 4 FIXES AND IMPROVEMENTS
+- Added board duplication from the Navigator context menu and Ctrl-drag pane
+  duplication for TextBoards.
+- Improved board deletion: open panes close before deletion, the pane being
+  removed is highlighted during confirmation, and one Writing board is kept.
+- Improved Windows PDF print-dialog status and recovery when printing fails or
+  the dialog closes.
+- Expanded the rightmost TextBoard scrollbar hit area without changing its
+  visible position, and kept the app window within the available screen area.
+- Added the middle dot (Alt+.) shortcut and refined the About shortcut guide.
+- Fixed paragraph indentation preset loading and preferences select typing.
+
+BETA 3 FIXES AND IMPROVEMENTS
 
 BETA 3 FIXES AND IMPROVEMENTS
 - Improved manuscript typography, paragraph spacing, indentation, and paste

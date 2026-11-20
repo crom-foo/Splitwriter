@@ -16,6 +16,7 @@ type Props = {
   writing: NavigatorTextItem[];
   notes: NavigatorTextItem[];
   writingVariants: { id: string; name: string }[];
+  protectedWritingBoardId: string | null;
   activeWritingVariantId: string;
   onSelectWritingVariant: (id: string) => void;
   onAddWritingVariant: () => void;
@@ -29,6 +30,7 @@ type Props = {
   onSelectionChange: (ids: string[]) => void;
   getBoardLabel?: (id: string) => string;
   onRenameBoard: (id: string, name: string) => void;
+  onDuplicateBoard: (id: string, group: BoardGroup) => void;
   onRenameGroup: (id: string, group: BoardGroup, name: string) => void;
   onDeleteBoard: (id: string, group: BoardGroup) => void;
   onGroupSelected: (ids: string[], group: BoardGroup) => string | null;
@@ -50,6 +52,7 @@ export default function NavigatorBoard({
   writing,
   notes,
   writingVariants,
+  protectedWritingBoardId,
   activeWritingVariantId,
   onSelectWritingVariant,
   onAddWritingVariant,
@@ -63,6 +66,7 @@ export default function NavigatorBoard({
   onSelectionChange,
   getBoardLabel,
   onRenameBoard,
+  onDuplicateBoard,
   onRenameGroup,
   onDeleteBoard,
   onGroupSelected,
@@ -91,6 +95,32 @@ export default function NavigatorBoard({
     | { type: "board"; id: string; name: string; group: BoardGroup }
     | null
   >(null);
+  const [deleteTargetRects, setDeleteTargetRects] = React.useState<Array<{ left: number; top: number; width: number; height: number }>>([]);
+  React.useEffect(() => {
+    if (pendingDelete?.type !== "board") {
+      setDeleteTargetRects([]);
+      return;
+    }
+    const panes = new Set<HTMLElement>();
+    document.querySelectorAll<HTMLElement>("[data-board-id]").forEach((board) => {
+      if (board.dataset.boardId === pendingDelete.id) {
+        const pane = board.closest<HTMLElement>("[data-sw-leaf-id]");
+        if (pane) panes.add(pane);
+      }
+    });
+    const update = () => setDeleteTargetRects(Array.from(panes, (pane) => {
+      const rect = pane.getBoundingClientRect();
+      return { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+    }));
+    update();
+    const observer = typeof ResizeObserver !== "undefined" ? new ResizeObserver(update) : null;
+    panes.forEach((pane) => observer?.observe(pane));
+    window.addEventListener("resize", update);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", update);
+    };
+  }, [pendingDelete]);
   React.useEffect(() => {
     const collectBoardIds = (items: NavigatorTextItem[]): string[] => items.flatMap((item) =>
       item.kind === "group" ? collectBoardIds(item.children || []) : [item.id]);
@@ -286,29 +316,34 @@ export default function NavigatorBoard({
           </div>
         </>}
         {pendingDelete && createPortal(
+          <>
           <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setPendingDelete(null); }}
             style={{ position: "fixed", inset: 0, zIndex: 20000, display: "grid", placeItems: "center", padding: 20, background: "rgba(0,0,0,.34)" }}>
+            {deleteTargetRects.map((rect, index) => <div key={`${rect.left}-${rect.top}-${index}`} aria-hidden="true" style={{ position: "fixed", zIndex: 1, pointerEvents: "none", left: rect.left, top: rect.top, width: rect.width, height: rect.height, boxSizing: "border-box", border: "2px solid var(--accent)", borderRadius: 3, opacity: 0.5, boxShadow: "0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent)" }} />)}
             <section role="alertdialog" aria-modal="true" aria-labelledby="navigator-delete-title"
-              style={{ width: "min(360px, calc(100vw - 40px))", boxSizing: "border-box", padding: 18, border: "1px solid var(--border)", borderRadius: 9, background: "var(--bg)", color: "var(--text-1)", boxShadow: "0 12px 32px rgba(0,0,0,.28)" }}>
+              style={{ position: "relative", zIndex: 2, width: "min(360px, calc(100vw - 40px))", boxSizing: "border-box", padding: 18, border: "1px solid var(--border)", borderRadius: 9, background: "var(--bg)", color: "var(--text-1)", boxShadow: "0 12px 32px rgba(0,0,0,.28)" }}>
               <div id="navigator-delete-title" style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>Confirm deletion</div>
               <div style={{ fontSize: 12, lineHeight: 1.5, color: "var(--text-2)", marginBottom: 18 }}>
                 {pendingDelete.type === "draft"
                   ? `Are you sure you want to delete “${pendingDelete.name}”?`
-                  : `Are you sure you want to delete “${pendingDelete.name}”? This cannot be undone.`}
+                  : pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId
+                    ? "At least one Writing board must remain. This board cannot be deleted."
+                    : `Are you sure you want to delete “${pendingDelete.name}”? This cannot be undone.`}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                 <button type="button" onClick={() => setPendingDelete(null)} style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--btn-bg)", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>Cancel</button>
-                <button type="button" onClick={() => {
+                <button type="button" disabled={pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId} onClick={() => {
                   if (pendingDelete.type === "draft") onDeleteWritingVariant(pendingDelete.id);
                   else onDeleteBoard(pendingDelete.id, pendingDelete.group);
                   setPendingDelete(null);
-                }} style={{ padding: "6px 12px", border: "1px solid color-mix(in srgb, #e35d5d 55%, transparent)", borderRadius: 5, background: "color-mix(in srgb, #e35d5d 16%, transparent)", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>Confirm</button>
+                }} style={{ padding: "6px 12px", border: "1px solid color-mix(in srgb, #e35d5d 55%, transparent)", borderRadius: 5, background: "color-mix(in srgb, #e35d5d 16%, transparent)", color: "var(--text-1)", opacity: pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId ? .45 : 1, font: "inherit", fontSize: 12, cursor: pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId ? "default" : "pointer" }}>Confirm</button>
               </div>
             </section>
-          </div>, document.body
+          </div>
+          </>, document.body
         )}
-        <NavigatorSection title="Writing" group="writing" items={writing} activeId={activeId} selectedIds={selectedIds} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("writing")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("writing")} isContextMenuOwner={contextMenuOwner === "writing"} />
-        <NavigatorSection title="Notes" group="notes" items={notes} activeId={activeId} selectedIds={selectedIds} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("notes")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("notes")} isContextMenuOwner={contextMenuOwner === "notes"} />
+        <NavigatorSection title="Writing" group="writing" items={writing} activeId={activeId} selectedIds={selectedIds} protectedWritingBoardId={protectedWritingBoardId} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onDuplicateBoard={onDuplicateBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("writing")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("writing")} isContextMenuOwner={contextMenuOwner === "writing"} />
+        <NavigatorSection title="Notes" group="notes" items={notes} activeId={activeId} selectedIds={selectedIds} protectedWritingBoardId={protectedWritingBoardId} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onDuplicateBoard={onDuplicateBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("notes")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("notes")} isContextMenuOwner={contextMenuOwner === "notes"} />
       </div>
     </section>
   );
@@ -320,9 +355,11 @@ function NavigatorSection({
   items,
   activeId,
   selectedIds,
+  protectedWritingBoardId,
   onSelectBoard,
   getBoardLabel,
   onRenameBoard,
+  onDuplicateBoard,
   onRenameGroup,
   onRequestDeleteBoard,
   onGroupSelected,
@@ -341,9 +378,11 @@ function NavigatorSection({
   items: NavigatorTextItem[];
   activeId: string | null;
   selectedIds: string[];
+  protectedWritingBoardId: string | null;
   onSelectBoard: (id: string, event: React.MouseEvent<HTMLDivElement>) => void;
   getBoardLabel?: (id: string) => string;
   onRenameBoard: (id: string, name: string) => void;
+  onDuplicateBoard: (id: string, group: BoardGroup) => void;
   onRenameGroup: (id: string, group: BoardGroup, name: string) => void;
   onRequestDeleteBoard: (id: string, name: string, group: BoardGroup) => void;
   onGroupSelected: (ids: string[], group: BoardGroup) => string | null;
@@ -714,6 +753,15 @@ function NavigatorSection({
               font: "inherit", fontSize: 11, cursor: "pointer",
             }}
           >Rename</button>
+          {findEntry(contextMenu.id)?.kind !== "group" && <button
+            type="button"
+            onClick={() => {
+              const item = findEntry(contextMenu.id);
+              setContextMenu(null);
+              if (item) onDuplicateBoard(item.id, item.group);
+            }}
+            style={contextMenuItemStyle}
+          >Duplicate</button>}
           {findEntry(contextMenu.id)?.kind === "group" ? (
             <button
               type="button"
@@ -744,12 +792,14 @@ function NavigatorSection({
           )}
           {findEntry(contextMenu.id)?.kind !== "group" && <button
             type="button"
+            disabled={group === "writing" && contextMenu.id === protectedWritingBoardId}
             onClick={() => {
               const item = findEntry(contextMenu.id);
               if (item) onRequestDeleteBoard(item.id, getBoardLabel?.(item.id) || item.label, item.group);
               setContextMenu(null);
             }}
-            style={{ ...contextMenuItemStyle, marginTop: 3, borderTop: "1px solid var(--border)", borderRadius: 0, paddingTop: 8 }}
+            title={group === "writing" && contextMenu.id === protectedWritingBoardId ? "At least one Writing board must remain" : undefined}
+            style={{ ...contextMenuItemStyle, marginTop: 3, borderTop: "1px solid var(--border)", borderRadius: 0, paddingTop: 8, opacity: group === "writing" && contextMenu.id === protectedWritingBoardId ? .45 : 1, cursor: group === "writing" && contextMenu.id === protectedWritingBoardId ? "default" : "pointer" }}
           >Delete Board</button>}
         </div>
       ), document.body)}

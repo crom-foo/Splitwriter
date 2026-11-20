@@ -296,7 +296,7 @@ function waitForPaged(doc: Document, enabled: boolean, timeoutMs = 1600) {
   });
 }
 
-function notifyPrintMessage(type: "SW_PRINT_OPENING" | "SW_PRINT_CLOSED") {
+function notifyPrintMessage(type: "SW_PRINT_OPENING" | "SW_PRINT_CLOSED" | "SW_PRINT_FAILED") {
   try { window.postMessage({ who: "splitwriter", type }, "*"); } catch {}
 }
 
@@ -382,6 +382,7 @@ export function printHTML(getHTML: () => string, opts: PrintOptions = {}) {
     } catch (err) {
       console.error("[Splitwriter] print failed:", err);
       printing = false;
+      notifyPrintMessage("SW_PRINT_FAILED");
       cleanup();
     }
   };

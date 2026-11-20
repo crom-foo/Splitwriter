@@ -87,6 +87,8 @@ function cleanHTML(source: string): string {
 export default function ManuscriptBoard({ boardIds, gapLines = 1, getHTML, getBoardName, onExportTxt, onExportPdf }: Props) {
   const [revision, setRevision] = React.useState(0);
   const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
+  const [exportButtonHovered, setExportButtonHovered] = React.useState(false);
+  const [hoveredExportItem, setHoveredExportItem] = React.useState<"TXT" | "PDF" | null>(null);
   const [currentBoardId, setCurrentBoardId] = React.useState<string | null>(boardIds[0] ?? null);
   const scrollRef = React.useRef<HTMLDivElement>(null);
   const boardSectionRefs = React.useRef(new Map<string, HTMLElement>());
@@ -202,13 +204,16 @@ export default function ManuscriptBoard({ boardIds, gapLines = 1, getHTML, getBo
           <div style={{ position: "relative", flex: "0 0 auto" }}>
           <button type="button" title="Export manuscript" aria-label="Export manuscript" aria-expanded={exportMenuOpen}
             onClick={() => setExportMenuOpen((open) => !open)}
-            style={{ width: 25, height: 25, display: "grid", placeItems: "center", border: "1px solid transparent", borderRadius: 4, background: "transparent", color: "var(--text-muted)", cursor: "pointer" }}>
+            onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+            onMouseEnter={() => setExportButtonHovered(true)}
+            onMouseLeave={() => setExportButtonHovered(false)}
+            style={{ width: 25, height: 25, display: "grid", placeItems: "center", border: `1px solid ${exportButtonHovered ? "color-mix(in srgb, var(--accent) 70%, var(--border) 30%)" : "transparent"}`, borderRadius: 4, background: exportButtonHovered ? "color-mix(in srgb, var(--accent) 16%, var(--bg) 84%)" : "transparent", color: exportButtonHovered ? "var(--accent)" : "var(--text-muted)", cursor: "pointer", transition: "background 120ms ease, border-color 120ms ease, color 120ms ease" }}>
             <svg width="15" height="15" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M8 2.5v7m0 0 2.5-2.5M8 9.5 5.5 7M3 10.5v2A1.5 1.5 0 0 0 4.5 14h7a1.5 1.5 0 0 0 1.5-1.5v-2" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round" strokeLinejoin="round" /></svg>
           </button>
           {exportMenuOpen && <>
             <button aria-label="Close export menu" onClick={() => setExportMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 20, border: 0, padding: 0, background: "transparent" }} />
             <div role="menu" style={{ position: "absolute", zIndex: 21, top: 28, right: 0, minWidth: 112, padding: 4, border: "1px solid var(--border)", borderRadius: 8, background: "var(--bg)", boxShadow: "0 4px 14px rgba(0,0,0,.14)" }}>
-              {([ ["TXT", onExportTxt], ["PDF", onExportPdf] ] as const).map(([label, action]) => <button key={label} role="menuitem" onClick={() => { setExportMenuOpen(false); action(); }} style={{ display: "block", width: "100%", padding: "7px 9px", border: 0, borderRadius: 5, textAlign: "left", background: "transparent", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>{label}</button>)}
+              {([ ["TXT", onExportTxt], ["PDF", onExportPdf] ] as const).map(([label, action]) => <button key={label} role="menuitem" onClick={() => { setExportMenuOpen(false); action(); }} onMouseEnter={() => setHoveredExportItem(label)} onMouseLeave={() => setHoveredExportItem(null)} style={{ display: "block", width: "100%", padding: "7px 9px", border: 0, borderRadius: 5, textAlign: "left", background: hoveredExportItem === label ? "color-mix(in srgb, var(--accent) 16%, var(--bg) 84%)" : "transparent", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer", transition: "background 120ms ease" }}>{label}</button>)}
             </div>
           </>}
           </div>

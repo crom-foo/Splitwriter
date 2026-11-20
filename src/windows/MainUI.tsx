@@ -986,7 +986,7 @@ function splitLeaf(root: TreeNode, leafId: string, dir: "horizontal" | "vertical
   const makeSplit = (leaf: LeafNode): SplitNode => ({
     type: "split", dir, ratio: 0.5, a: leaf,
     b: leaf.kind === "text"
-      ? { ...makeLeaf("text", "notes"), ...(newTextId ? { textId: newTextId } : {}) }
+      ? { ...makeLeaf("text", leaf.textGroup ?? "writing"), ...(newTextId ? { textId: newTextId } : {}) }
       : makeLeaf(leaf.kind, leaf.textGroup),
   });
   const walk = (n: TreeNode): TreeNode => {
@@ -1348,23 +1348,83 @@ const applySnap = (s: HistorySnap) => {
   }, []);
 
   // hoisted split handler
-  function handleRequestSplit(leafId: string, dir: "horizontal" | "vertical") {
+  function handleRequestSplit(leafId: string, dir: "horizontal" | "vertical", duplicate = false) {
     flushOpenEditorsToStore();
     const source = findLeaf(treeRef.current, leafId);
     const newTextId = source?.kind === "text"
       ? allocateTextBoardId(treeRef.current, boardHTMLRef.current, archivedTextRef.current, uid)
       : undefined;
+    const group = source?.textGroup ?? "writing";
+    if (newTextId) boardHTMLRef.current[newTextId] = duplicate ? (boardHTMLRef.current[source!.textId] ?? "") : "";
+    const sourceName = source && findNavigatorLeaf(treeRef.current)?.boardNames?.[source.textId]
+      || (source ? firstLineFromHTML(boardHTMLRef.current[source.textId] ?? "", 36) : "")
+      || "Untitled TextBoard";
     setTree(prev => {
       let next = splitLeaf(prev, leafId, dir, newTextId);
       if (newTextId) {
         const navigator = findNavigatorLeaf(next);
-        if (navigator) next = addNavigatorBoard(next, navigator.id, "notes", newTextId);
+        if (navigator) {
+          next = addNavigatorBoard(next, navigator.id, group, newTextId);
+          if (duplicate) next = setNavigatorBoardName(next, navigator.id, newTextId, `${sourceName} — Copy`);
+        }
       }
       return next;
     });
     io.markDirty();
-    if (newTextId) io.notify("Note board created.", "info", 1600);
-    pushHistory("split");
+    if (newTextId) io.notify(`${group === "notes" ? "Note" : "Writing"} board ${duplicate ? "duplicated" : "created"}.`, "info", 1600);
+    requestAnimationFrame(() => pushHistory("split"));
+  }
+
+  function handleDuplicatePane(sourceLeafId: string, targetLeafId: string) {
+    flushOpenEditorsToStore();
+    const currentTree = treeRef.current;
+    const source = findLeaf(currentTree, sourceLeafId);
+    const target = findLeaf(currentTree, targetLeafId);
+    if (!source || source.kind !== "text" || !target || (target.kind !== "text" && target.kind !== "scenario")) return;
+    const group = source.textGroup ?? "writing";
+    const newTextId = allocateTextBoardId(currentTree, boardHTMLRef.current, archivedTextRef.current, uid);
+    boardHTMLRef.current[newTextId] = boardHTMLRef.current[source.textId] ?? "";
+    const sourceName = findNavigatorLeaf(currentTree)?.boardNames?.[source.textId]
+      || firstLineFromHTML(boardHTMLRef.current[source.textId] ?? "", 36)
+      || "Untitled TextBoard";
+    setTree((previous) => {
+      const navigator = findNavigatorLeaf(previous);
+      let next = navigator ? addNavigatorBoard(previous, navigator.id, group, newTextId) : previous;
+      if (navigator) next = setNavigatorBoardName(next, navigator.id, newTextId, `${sourceName} — Copy`);
+      return retargetLeafAsText(next, targetLeafId, newTextId, group);
+    });
+    setActiveNavigatorTextId(newTextId);
+    setSelectedNavigatorBoardIds([]);
+    navigatorSelectionAnchorRef.current = null;
+    setSessionKey((key) => key + 1);
+    setDuplicateTargetLeafId(null);
+    io.markDirty();
+    io.notify(`${group === "notes" ? "Note" : "Writing"} board duplicated.`, "info", 1600);
+    requestAnimationFrame(() => pushHistory("duplicate-board-to-pane"));
+  }
+
+  function handleDuplicateNavigatorBoard(boardId: string, group: "writing" | "notes") {
+    flushOpenEditorsToStore();
+    const currentTree = treeRef.current;
+    const navigator = findNavigatorLeaf(currentTree);
+    if (!navigator) return;
+    const sourceHTML = boardHTMLRef.current[boardId] ?? "";
+    const newTextId = allocateTextBoardId(currentTree, boardHTMLRef.current, archivedTextRef.current, uid);
+    boardHTMLRef.current[newTextId] = sourceHTML;
+    const sourceName = navigator.boardNames?.[boardId] || firstLineFromHTML(sourceHTML, 36) || "Untitled TextBoard";
+    setTree((previous) => {
+      const currentNavigator = findNavigatorLeaf(previous);
+      if (!currentNavigator) return previous;
+      let next = addNavigatorBoard(previous, currentNavigator.id, group, newTextId);
+      return setNavigatorBoardName(next, currentNavigator.id, newTextId, `${sourceName} — Copy`);
+    });
+    setActiveNavigatorTextId(newTextId);
+    setSelectedNavigatorBoardIds([newTextId]);
+    navigatorSelectionAnchorRef.current = newTextId;
+    io.markDirty();
+    setSessionKey((key) => key + 1);
+    io.notify(`${group === "notes" ? "Note" : "Writing"} board duplicated.`, "info", 1600);
+    requestAnimationFrame(() => pushHistory("duplicate-navigator-board"));
   }
 
   function handleSwapPanes(sourceLeafId: string, targetLeafId: string) {
@@ -1443,6 +1503,19 @@ const applySnap = (s: HistorySnap) => {
     if (printExportActiveRef.current) return;
     printExportActiveRef.current = true;
     const hideWait = showPrintWait(io, "Preparing print preview…");
+    let completed = false;
+    let statusTimer: number | undefined;
+    let safetyTimer: number | undefined;
+
+    const finishTracking = () => {
+      if (completed) return;
+      completed = true;
+      if (statusTimer !== undefined) window.clearTimeout(statusTimer);
+      if (safetyTimer !== undefined) window.clearTimeout(safetyTimer);
+      try { hideWait(); } catch {}
+      printExportActiveRef.current = false;
+      window.removeEventListener("message", onMsg);
+    };
 
     const onMsg = (ev: MessageEvent) => {
       const d: any = ev?.data;
@@ -1451,24 +1524,28 @@ const applySnap = (s: HistorySnap) => {
       if (d.who === "splitwriter" && d.type === "SW_PRINT_OPENING") {
         try { hideWait(); } catch {}
       }
+      if (d.who === "splitwriter" && d.type === "SW_PRINT_FAILED") {
+        io.notify("Could not open the PDF print dialog. Please try again.", "error", 2600);
+      }
       if (d.who === "splitwriter" && d.type === "SW_PRINT_CLOSED") {
-        try { hideWait(); } catch {}
-        printExportActiveRef.current = false;
-        window.removeEventListener("message", onMsg);
+        finishTracking();
       }
       if (d.__sw_print_done__) {
-        try { hideWait(); } catch {}
-        printExportActiveRef.current = false;
-        window.removeEventListener("message", onMsg);
+        finishTracking();
       }
     };
     window.addEventListener("message", onMsg);
 
-    // 하드 폴백
-    setTimeout(() => {
+    // Hide the preparation status after 10 seconds, but keep listening while
+    // the native print dialog is open so a slow user choice can still finish.
+    statusTimer = window.setTimeout(() => {
       try { hideWait(); } catch {}
-      window.removeEventListener("message", onMsg);
     }, 10000);
+    // Recover the export lock if WebView fails to report a print completion.
+    safetyTimer = window.setTimeout(() => {
+      io.notify("PDF export timed out. Please try again.", "warn", 3000);
+      finishTracking();
+    }, 120000);
 
     const getHTML = () => {
       if (provider) return provider();
@@ -1491,9 +1568,10 @@ const applySnap = (s: HistorySnap) => {
         onlyPageNumber: true,
       });
     } catch (error) {
-      printExportActiveRef.current = false;
-      window.removeEventListener("message", onMsg);
-      throw error;
+      console.error("[Splitwriter] could not prepare PDF export:", error);
+      const detail = error instanceof Error ? error.message : "Unknown error";
+      io.notify(`PDF export failed: ${detail}`, "error", 3600);
+      finishTracking();
     }
   }
 
@@ -1758,11 +1836,17 @@ const applySnap = (s: HistorySnap) => {
           const screen = window.screen;
           const left = Number((screen as any).availLeft ?? 0);
           const top = Number((screen as any).availTop ?? 0);
-          const rightLimit = left + Math.max(0, screen.availWidth - 160);
-          const bottomLimit = top + Math.max(0, screen.availHeight - 64);
+          const availableWidth = Math.max(1, screen.availWidth);
+          const availableHeight = Math.max(1, screen.availHeight);
+          const minWidth = Math.min(900, availableWidth);
+          const minHeight = Math.min(400, availableHeight);
+          const width = Math.min(availableWidth, Math.max(minWidth, state.width));
+          const height = Math.min(availableHeight, Math.max(minHeight, state.height));
+          const rightLimit = left + Math.max(0, availableWidth - width);
+          const bottomLimit = top + Math.max(0, availableHeight - height);
           const x = Math.round(Math.min(Math.max(state.x, left), rightLimit));
           const y = Math.round(Math.min(Math.max(state.y, top), bottomLimit));
-          await appWindow.setSize(new LogicalSize(Math.max(900, state.width), Math.max(600, state.height)));
+          await appWindow.setSize(new LogicalSize(width, height));
           await appWindow.setPosition(new LogicalPosition(x, y));
           if (state.maximized) await appWindow.maximize();
         } catch (error) {
@@ -2287,43 +2371,44 @@ const applySnap = (s: HistorySnap) => {
     const navigator = findNavigatorLeaf(currentTree);
     if (!navigator) return;
     const openLeafIds = findLeavesByTextId(currentTree, boardId);
-    const openTextIds = new Set(collectTextLeaves(currentTree).map((leaf) => leaf.textId));
-    let nextTree = removeNavigatorBoard(currentTree, navigator.id, group, boardId);
-    let nextNavigator = findNavigatorLeaf(nextTree);
-    let remainingIds = nextNavigator
-      ? flattenNavigatorBoardIds(navigatorEntriesForLeaf(nextNavigator, group))
-      : [];
-    let replacementId = remainingIds.find((id) => !openTextIds.has(id));
+    const remainingIds = group === "writing"
+      ? Array.from(new Set(writingVariantsForLeaf(navigator)
+          .flatMap((variant) => flattenNavigatorBoardIds(variant.entries))))
+          .filter((id) => id !== boardId)
+      : flattenNavigatorBoardIds(navigatorEntriesForLeaf(navigator, group)).filter((id) => id !== boardId);
+    const remainingActiveWritingIds = flattenNavigatorBoardIds(navigatorEntriesForLeaf(navigator, "writing"))
+      .filter((id) => id !== boardId);
+    if (group === "writing" && remainingIds.length === 0) return;
 
-    // Keep an already-open pane usable. If no other board is available, create
-    // one empty replacement and register it in every Writing order.
-    if (openLeafIds.length && !replacementId) {
-      replacementId = allocateTextBoardId(currentTree, boardHTMLRef.current, archivedTextRef.current, uid);
-      boardHTMLRef.current[replacementId] = "";
-      nextTree = addNavigatorBoard(nextTree, navigator.id, group, replacementId);
-      nextNavigator = findNavigatorLeaf(nextTree);
-      remainingIds = nextNavigator ? flattenNavigatorBoardIds(navigatorEntriesForLeaf(nextNavigator, group)) : [replacementId];
+    // Close every pane showing this board first. On the next frame, remove it
+    // from Navigator and delete its stored content.
+    let closedTree = currentTree;
+    for (const leafId of openLeafIds) closedTree = removeLeaf(closedTree, leafId);
+    if (openLeafIds.length) {
+      treeRef.current = closedTree;
+      setTree(closedTree);
     }
-
-    if (replacementId) {
-      for (const leafId of openLeafIds) nextTree = retargetLeafTextId(nextTree, leafId, replacementId);
-    }
-    setTree(nextTree);
-    delete boardHTMLRef.current[boardId];
-    delete archivedTextRef.current[boardId];
-    setArchivedText((previous) => {
-      const next = { ...previous };
-      delete next[boardId];
-      return next;
+    requestAnimationFrame(() => {
+      const latestTree = treeRef.current;
+      const latestNavigator = findNavigatorLeaf(latestTree);
+      if (!latestNavigator) return;
+      setTree(removeNavigatorBoard(latestTree, latestNavigator.id, group, boardId));
+      delete boardHTMLRef.current[boardId];
+      delete archivedTextRef.current[boardId];
+      setArchivedText((previous) => {
+        const next = { ...previous };
+        delete next[boardId];
+        return next;
+      });
+      if (activeNavigatorTextId === boardId) setActiveNavigatorTextId(remainingActiveWritingIds[0] || remainingIds[0] || null);
+      setSelectedNavigatorBoardIds((selected) => selected.filter((id) => id !== boardId));
+      navigatorSelectionAnchorRef.current = null;
+      io.markDirty();
+      setSessionKey((key) => key + 1);
+      emitEditState();
+      requestAnimationFrame(() => pushHistory("delete-navigator-board"));
+      io.notify(group === "writing" ? "Writing board deleted." : "Note board deleted.", "info", 1600);
     });
-    if (activeNavigatorTextId === boardId) setActiveNavigatorTextId(replacementId || remainingIds[0] || null);
-    setSelectedNavigatorBoardIds((selected) => selected.filter((id) => id !== boardId));
-    navigatorSelectionAnchorRef.current = null;
-    io.markDirty();
-    setSessionKey((key) => key + 1);
-    emitEditState();
-    requestAnimationFrame(() => pushHistory("delete-navigator-board"));
-    io.notify(group === "writing" ? "Writing board deleted." : "Note board deleted.", "info", 1600);
   }, [activeNavigatorTextId, emitEditState, io, setArchivedText]);
 
   React.useEffect(() => {
@@ -3161,7 +3246,7 @@ const applySnap = (s: HistorySnap) => {
     if (mainLeaf) openNavigatorBoard(boardId, group, mainLeaf.id, mainLeaf.kind, true);
   };
 
-  const renderLeaf = (leaf: LeafNode) => {
+  const renderLeaf = (leaf: LeafNode, touchesWindowRightEdge = false) => {
 
     if (leaf.kind === "navigator") {
       const writingIds = leaf.writingBoardIds || collectTextLeaves(tree)
@@ -3189,6 +3274,9 @@ const applySnap = (s: HistorySnap) => {
       const notes = toNavigatorItems(navigatorEntriesForLeaf(leaf, "notes").length
         ? navigatorEntriesForLeaf(leaf, "notes") : notesIds.map((id) => ({ type: "board" as const, id })), "notes");
       const writingVariants = writingVariantsForLeaf(leaf).map(({ id, name }) => ({ id, name }));
+      const allWritingBoardIds = Array.from(new Set(
+        writingVariantsForLeaf(leaf).flatMap((variant) => flattenNavigatorBoardIds(variant.entries))
+      ));
       return (
         <LeafPane
           key={`leaf-${leaf.id}-${sessionKey}`}
@@ -3197,14 +3285,18 @@ const applySnap = (s: HistorySnap) => {
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
           onRequestSwap={handleSwapPanes}
+          onRequestDuplicatePane={handleDuplicatePane}
           onSwapTargetChange={setSwapTargetLeafId}
+          onDuplicateTargetChange={setDuplicateTargetLeafId}
           swapTargetLeafId={swapTargetLeafId}
+          duplicateTargetLeafId={duplicateTargetLeafId}
           accentColor={(prefs as any)?.accentColor}
         >
           <NavigatorBoard
             writing={writing}
             notes={notes}
             writingVariants={writingVariants}
+            protectedWritingBoardId={allWritingBoardIds.length === 1 ? allWritingBoardIds[0] : null}
             activeWritingVariantId={leaf.activeWritingVariantId || "main"}
             onSelectWritingVariant={(id) => {
               setTree((previous) => selectWritingVariant(previous, leaf.id, id));
@@ -3275,6 +3367,7 @@ const applySnap = (s: HistorySnap) => {
               io.markDirty();
               requestAnimationFrame(() => pushHistory("rename-navigator-board"));
             }}
+            onDuplicateBoard={handleDuplicateNavigatorBoard}
             onDeleteBoard={handleNavigatorDeleteBoard}
             onRenameGroup={(id, group, name) => {
               setTree((previous) => renameNavigatorGroup(previous, leaf.id, group, id, name.trim()));
@@ -3392,8 +3485,12 @@ const applySnap = (s: HistorySnap) => {
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
           onRequestSwap={handleSwapPanes}
+          onRequestDuplicatePane={handleDuplicatePane}
           onSwapTargetChange={setSwapTargetLeafId}
+          onDuplicateTargetChange={setDuplicateTargetLeafId}
           swapTargetLeafId={swapTargetLeafId}
+          duplicateTargetLeafId={duplicateTargetLeafId}
+          canDuplicate={leaf.kind === "text"}
           accentColor={(prefs as any)?.accentColor}
         >
         <TextBoard
@@ -3401,6 +3498,7 @@ const applySnap = (s: HistorySnap) => {
           key={`${sessionKey}:${leaf.id}:${leaf.textId}`}
           id={leaf.textId}
           scenario={leaf.kind === "scenario"}
+          touchesWindowRightEdge={touchesWindowRightEdge}
           accentColor={(prefs as any)?.accentColor}
           initialHTML={getInitialHTML(leaf.textId)}
           onChange={(html) => handleBoardChange(leaf.textId, html)}
@@ -3427,8 +3525,11 @@ const applySnap = (s: HistorySnap) => {
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
           onRequestSwap={handleSwapPanes}
+          onRequestDuplicatePane={handleDuplicatePane}
           onSwapTargetChange={setSwapTargetLeafId}
+          onDuplicateTargetChange={setDuplicateTargetLeafId}
           swapTargetLeafId={swapTargetLeafId}
+          duplicateTargetLeafId={duplicateTargetLeafId}
           accentColor={(prefs as any)?.accentColor}
         >
           <ViewerBoard
@@ -3474,8 +3575,11 @@ const applySnap = (s: HistorySnap) => {
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
           onRequestSwap={handleSwapPanes}
+          onRequestDuplicatePane={handleDuplicatePane}
           onSwapTargetChange={setSwapTargetLeafId}
+          onDuplicateTargetChange={setDuplicateTargetLeafId}
           swapTargetLeafId={swapTargetLeafId}
+          duplicateTargetLeafId={duplicateTargetLeafId}
           accentColor={(prefs as any)?.accentColor}
         >
           <ManuscriptBoard boardIds={boardIds} gapLines={prefs.manuscriptGapLines ?? 1}
@@ -3496,8 +3600,11 @@ const applySnap = (s: HistorySnap) => {
           onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
           onRequestSplit={handleRequestSplit}
           onRequestSwap={handleSwapPanes}
+          onRequestDuplicatePane={handleDuplicatePane}
           onSwapTargetChange={setSwapTargetLeafId}
+          onDuplicateTargetChange={setDuplicateTargetLeafId}
           swapTargetLeafId={swapTargetLeafId}
+          duplicateTargetLeafId={duplicateTargetLeafId}
           accentColor={(prefs as any)?.accentColor}
         >
           <EditBoard onDeleteRequest={handleDeleteBoards} />
@@ -3517,8 +3624,11 @@ const applySnap = (s: HistorySnap) => {
         onOpenMenu={(id, pt, src) => openMenuFor(id, pt, src)}
         onRequestSplit={handleRequestSplit}
         onRequestSwap={handleSwapPanes}
+        onRequestDuplicatePane={handleDuplicatePane}
         onSwapTargetChange={setSwapTargetLeafId}
+        onDuplicateTargetChange={setDuplicateTargetLeafId}
         swapTargetLeafId={swapTargetLeafId}
+        duplicateTargetLeafId={duplicateTargetLeafId}
         accentColor={(prefs as any)?.accentColor}
       >
         <ImageBoard
@@ -3567,14 +3677,15 @@ const applySnap = (s: HistorySnap) => {
 
   const [draggingPath, setDraggingPath] = React.useState<string | null>(null);
   const [swapTargetLeafId, setSwapTargetLeafId] = React.useState<string | null>(null);
+  const [duplicateTargetLeafId, setDuplicateTargetLeafId] = React.useState<string | null>(null);
 
   const subtreeHasKind = (node: TreeNode, kind: LeafKind): boolean => node.type === "leaf"
     ? node.kind === kind
     : subtreeHasKind(node.a, kind) || subtreeHasKind(node.b, kind);
 
-  const renderNode = (node: TreeNode, path: number[] = []): React.ReactNode => {
+  const renderNode = (node: TreeNode, path: number[] = [], touchesWindowRightEdge = true): React.ReactNode => {
     if (node.type === "leaf") {
-      return renderLeaf(node);
+      return renderLeaf(node, touchesWindowRightEdge);
     }
 
     // Compute child subtree minimum sizes (px)
@@ -3600,8 +3711,8 @@ const applySnap = (s: HistorySnap) => {
         insetGutter={insetGutter}
         onDragStart={() => setDraggingPath(path.join("."))}
         onDragEnd={() => setDraggingPath(null)}
-        a={renderNode(node.a, [...path, 0])}
-        b={renderNode(node.b, [...path, 1])}
+        a={renderNode(node.a, [...path, 0], node.dir === "vertical" ? false : touchesWindowRightEdge)}
+        b={renderNode(node.b, [...path, 1], touchesWindowRightEdge)}
       />
     );
   };
@@ -4136,17 +4247,17 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
     </span>
   );
 
-  const Row = ({ k, v }: { k: React.ReactNode; v: React.ReactNode }) => (
+  const Row = ({ k, v, wideValue = false }: { k: React.ReactNode; v: React.ReactNode; wideValue?: boolean }) => (
     <div
       style={{
         display: "grid",
-        gridTemplateColumns: "minmax(0, 1fr) minmax(0, auto)",
+        gridTemplateColumns: wideValue ? "minmax(76px, 0.7fr) minmax(0, 1.3fr)" : "minmax(0, 1fr) minmax(0, auto)",
         alignItems: "center",
         gap: 12,
         padding: "6px 0",
       }}
     ><span style={{ opacity: 0.75, minWidth: 0 }}>{k}</span>
-      <span style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 4, maxWidth: "100%", textAlign: "right" }}>{v}</span>
+      <span style={{ display: "flex", flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center", gap: 4, minWidth: 0, maxWidth: "100%", textAlign: "right", lineHeight: wideValue ? 1.4 : undefined, overflowWrap: wideValue ? "anywhere" : undefined }}>{v}</span>
     </div>
   );
 
@@ -4258,6 +4369,8 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
         <Row k="Save As" v={<Keys parts={["Ctrl", "Shift", "S"]} />} />
         <Row k="Undo" v={<Keys parts={["Ctrl", "Z"]} />} />
         <Row k="Redo" v={<Keys parts={["Ctrl", "Y"]} />} />
+        <Row k="Midline ellipsis (⋯)" v={<Keys parts={["Alt", "M"]} />} />
+        <Row k="Middle dot (·)" v={<Keys parts={["Alt", "."]} />} />
       </Section>
 
       <Section title="NAVIGATOR">
@@ -4269,8 +4382,9 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
       </Section>
 
       <Section title="PANE LAYOUT">
-        <Row k="Split" v={<span>Drag handle within pane</span>} />
-        <Row k="Swap" v={<span>Drag handle onto another pane</span>} />
+        <Row wideValue k="Split" v={<span>Drag handle within pane</span>} />
+        <Row wideValue k="Swap" v={<span>Drag handle onto another pane</span>} />
+        <Row wideValue k="Duplicate" v={<span>Hold Ctrl while dragging a TextBoard handle</span>} />
       </Section>
 
       {/* PRESET */}
@@ -4323,9 +4437,8 @@ function AboutPanel({ theme = "dark" }: { theme?: "dark" | "light" }) {
 
       {/* FORMATTING */}
       <Section title="FORMATTING">
-        <Row k="Bold" v={<Keys parts={["Ctrl", "B"]} />} />
-        <Row k="Italic" v={<Keys parts={["Ctrl", "I"]} />} />
-        <Row k="Ellipsis (…) " v={<Keys parts={["Alt", "M"]} />} />
+        <Row k="Bold (Selected only)" v={<Keys parts={["Ctrl", "B"]} />} />
+        <Row k="Italic (Selected only)" v={<Keys parts={["Ctrl", "I"]} />} />
         <Row k="Align Left" v={<Keys parts={["Alt", "L"]} />} />
         <Row k="Align Center" v={<Keys parts={["Alt", "C"]} />} />
         <Row k="Align Right" v={<Keys parts={["Alt", "R"]} />} />

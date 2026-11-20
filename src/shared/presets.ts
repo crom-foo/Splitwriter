@@ -130,6 +130,7 @@ export async function loadPreset(name: string): Promise<SplitwriterPrefs | null>
 export async function applyDefault(): Promise<SplitwriterPrefs> {
   return {
     typeface: DEFAULT_PREFS.typeface,
+    paragraphIndent: DEFAULT_PREFS.paragraphIndent,
     accentColor: DEFAULT_PREFS.accentColor,
     manuscriptGapLines: DEFAULT_PREFS.manuscriptGapLines,
     writingGoal: DEFAULT_PREFS.writingGoal,
