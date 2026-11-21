@@ -7,160 +7,80 @@
   />
 </p>
 
-## Download
+<h1 align="center">Splitwriter</h1>
+<p align="center"><em>For all creators — past, present, and future.</em></p>
 
-### 👉 [Download Splitwriter for Windows x64](https://github.com/crom-foo/Splitwriter/releases/latest)
+Splitwriter is a free, offline writing workspace for novels, scripts, journals, and other creative projects. It brings writing and reference materials together in a flexible, distraction-light layout.
 
-# Splitwriter
+> **Splitwriter 2.0 — Coming Soon**  
+> Version 2.0 is being tested and refined. Its redesigned Navigator, Draft workflow, and manuscript tools will be introduced with the upcoming update. **The features described in the preview below are not a description of the currently available download.**
 
-_For all creators — past, present, and future._
+## Download — Current Public Build
 
-Splitwriter is a focused writing tool built to make creative work easier.  
-Instead of fighting with a heavy word processor, you just open Splitwriter and start writing.
+**Current listed release:** v2.0 Beta 3 · Portable · Windows x64
 
-Current Version: **v2.0 Beta 3 (Portable, Windows x64)**
+[**Download Splitwriter for Windows x64**](https://github.com/crom-foo/Splitwriter/releases/latest)
 
-UI language: **English**  
-Typing input (IME/keyboard): **Auto (System)** + manual options (e.g. English, 한국어, 日本語, 中文, Русский, …)
+The link above points to the **currently published release**, not the forthcoming 2.0 update.
 
-Free Forever — Splitwriter aims to stay free for both personal and commercial creative work.
+- **UI language:** English
+- **Typing input:** System IME/keyboard support, with language options including 한국어, 日本語, 中文, and others
+- **Price:** Free for personal and commercial creative work
 
-_Made by a stubborn nagger who refuses to quit, with 100% coding support from ChatGPT._  
-_created by Crom Kim & GPT, 2025-2026_
+## The Workspace
 
----
+Splitwriter was made to help writers spend more time with their stories—not with the tools around them. Write in a TextBoard, keep reference images close, and arrange your workspace to suit your process.
 
-## Why Splitwriter?
+<img width="1100" height="720" alt="Splitwriter workspace screenshot" src="https://github.com/user-attachments/assets/2b7765b3-26b1-46b4-a8c1-fb504d73a66e" />
 
-This program exists for one purpose: **to support comfortable, uninterrupted writing.**
+## What's Coming in 2.0
 
-- No account, no network, no cloud lock-in.
-- Simple but powerful split layout for text, references, and management.
-- Just enough features for long-form creative work, without turning into a full office suite.
+The following is a **preview of the upcoming update**, which is still undergoing testing.
 
-If you want a small notebook-like tool for novels, scripts, or journals, Splitwriter is for you.
+- **Navigator** — Organize boards in Writing and Notes groups; open boards by dragging them into the workspace.
+- **Drafts** — Explore different board orders for a manuscript without being limited to a single arrangement.
+- **Manuscript View** — Read the combined text from your Writing boards in order and export the manuscript.
+- **Anchor Board & Anchor Pane** — Keep a designated main working board close at hand.
+- **TextBoard** — Write with typeface presets, Typewriter mode, writing goals, and Undo/Redo.
+- **ImageBoard** — View reference images alongside your writing. Images are referenced by file path rather than embedded in the `.swon` project.
+- **Echo View** — Read your writing in an immersive presentation.
+- **Flexible workspace** — Split, move, and duplicate boards with their handles.
 
-<img width="1100" height="720" alt="screenshot" src="https://github.com/user-attachments/assets/2b7765b3-26b1-46b4-a8c1-fb504d73a66e" />
+The feature set may change while testing continues.
 
----
+## Manual
 
-## Key Features
+A **Korean and English Splitwriter 2.0 manual** has been prepared. Public access to the manual will be provided with the upcoming 2.0 update.
 
-### Core Design
+## Requirements & Getting Started
 
-- **Complete Security**  
-  Splitwriter works fully offline. It does not collect user information or require an internet connection.
+- **Platform:** Windows x64
+- **Recommended OS:** Windows 10 (1803) or later
+- **Runtime:** [Microsoft Edge WebView2 Runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
 
-- **Factory Initialization**  
-  You can reset presets and settings by deleting the configuration files — a “factory reset” is always possible.
+For the portable build:
 
-- **Free Forever**  
-  Licensed under MIT and intended to remain free for personal and commercial creative work.
+1. Download the ZIP from [Releases](https://github.com/crom-foo/Splitwriter/releases/latest).
+2. Extract it to a folder of your choice.
+3. Run `Splitwriter.exe`.
 
-### Boards
+If the app does not launch, check that WebView2 Runtime is installed. An unsigned beta executable may also trigger a Windows SmartScreen warning; review the publisher information and file source before deciding whether to proceed.
 
-- **Text Board**  
-  Preset-based text editor for comfortable writing. Switch between headline/body/accent/emphasis presets for different parts of your manuscript.
+## Project Files & Privacy
 
-- **Echo View (Cinematic Preview)**
-  Instantly preview the selected text in a clean, full-screen, visual-novel-style layout.
-  Echo View can display your text alone against a dark background, or combine it with the current reference image to create a scene-like presentation.
-  Perfect for reviewing dialogue, checking flow, practicing readings, or preparing YouTube/lecture scripts.
+Splitwriter uses the `.swon` project format, based on JSON. Writing and project layout are stored locally; reference images are linked by file path and may need relinking if moved.
 
-- **Image Board**  
-  An image viewer for description and reference. Images are **referenced by path only** and are not embedded into the `.swon` file.
-
-- **Viewer Board**  
-  Open another `.swon` file side-by-side in a read-only view to reference older drafts or notes.
-
-- **Manage Board**  
-  Organize your `.swon` projects and user data in one place.
-
-### Layout & Interaction
-
-- **Flexible Layout**  
-  Free horizontal/vertical splitting of panes with minimum-size guards.  
-  Double-click a split handle to snap panes to a clean 50 / 50 layout.
-
-- **Typewriter Mode**  
-  Keeps the current line at a comfortable height while you type, so your eyes don’t have to chase the cursor.
-
-- **Accent Color**  
-  A single accent color that instantly changes the overall mood of the editor.
-
-### Writing Utilities
-
-- **Auto Save**  
-  Timer-based autosave using seconds. Your work is automatically saved at regular intervals.
-
-- **Curly Braces Replacement**  
-  For writers who rarely use `{ }`, Splitwriter can replace them with more writing-friendly symbols.
-
-- **Writing Goal HUD**  
-  A small heads-up display that shows your current progress toward a writing goal.
-
-- **Undo / Redo**  
-  Per-board history for both text and image edits (up to 50 steps, including selection restore).
-
----
-
-## System Requirements
-
-- **OS**: Windows 10 (1803) or later recommended  
-- **Runtime**: Requires **Microsoft WebView2 Runtime**
-
-If the app does not start, please install the WebView2 runtime first.
-
----
-
-## How to Run (Portable)
-
-1. Download the latest portable ZIP from the **Releases** page.
-2. Extract the ZIP to any folder.
-3. Double-click **`Splitwriter.exe`** to launch the app.
-
-No installation is required.
-
----
-
-## If the App Does Not Start
-
-Install the Evergreen WebView2 Runtime from [Microsoft's download page](https://developer.microsoft.com/microsoft-edge/webview2/), then launch `Splitwriter.exe` again.
-
----
-
-## Data & File Format
-
-- Project data is saved under your **local app data folder**  
-  (a sub-folder of `AppData\Local` in your user profile).
-- Splitwriter uses its own file format: **`.swon`**  
-- Existing `.swon` files can be opened from **`File → Open`**.
-
----
-
-## Security Warning (SmartScreen)
-
-This beta build is **not digitally signed**, so Windows SmartScreen may show a warning.
-
-1. Click **“More info”**
-2. Click **“Run anyway”** to start Splitwriter
-
-This is expected behavior for unsigned beta builds.
-
----
+Splitwriter is designed for offline writing without an account or mandatory cloud service.
 
 ## License
 
-Splitwriter is released under the **MIT License**.
+Splitwriter is released under the **MIT License** and is intended to remain free for personal and commercial creative work.
 
-Free forever for personal and commercial creative work.  
-Made by Crom Kim & GPT, 2025-2026.
-
----
+Created by **Crom Kim & GPT**, 2025–2026.
 
 ## Support
 
-Support is optional — thank you for using Splitwriter.
+Support is optional. Thank you for using Splitwriter.
 
-Splitwriter is free forever. If it helped you, you can buy me a coffee ☕  
+If it helped you, you can buy me a coffee ☕  
 PayPal: [paypal.me/splitwriter](https://paypal.me/splitwriter)
