@@ -52,9 +52,11 @@ The following is a **preview of the upcoming update**, which is still undergoing
 
 The feature set may change while testing continues.
 
+
 ## Manual
 
 A **Korean and English Splitwriter 2.0 manual** has been prepared. Public access to the manual will be provided with the upcoming 2.0 update.
+
 
 ## Requirements & Getting Started
 
@@ -70,17 +72,20 @@ For the portable build:
 
 If the app does not launch, check that WebView2 Runtime is installed. An unsigned beta executable may also trigger a Windows SmartScreen warning; review the publisher information and file source before deciding whether to proceed.
 
+
 ## Project Files & Privacy
 
 Splitwriter uses the `.swon` project format, based on JSON. Writing and project layout are stored locally; reference images are linked by file path and may need relinking if moved.
 
 Splitwriter is designed for offline writing without an account or mandatory cloud service.
 
+
 ## License
 
 Splitwriter is released under the **MIT License** and is intended to remain free for personal and commercial creative work.
 
 Created by **Crom Kim & GPT**, 2025–2026.
+
 
 ## Support
 
