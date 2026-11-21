@@ -31,7 +31,11 @@ The link above points to the **currently published release**, not the forthcomin
 
 Splitwriter was made to help writers spend more time with their stories—not with the tools around them. Write in a TextBoard, keep reference images close, and arrange your workspace to suit your process.
 
-<img width="1100" height="720" alt="Splitwriter workspace screenshot" src="https://github.com/user-attachments/assets/2b7765b3-26b1-46b4-a8c1-fb504d73a66e" />
+<img
+  width="1100"
+  alt="Splitwriter 2.0 Workspace"
+  src="./assets/splitwriter-main-2.0.png"
+/>
 
 ## What's Coming in 2.0
 
