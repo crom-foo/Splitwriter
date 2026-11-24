@@ -55,7 +55,10 @@ The feature set may change while testing continues.
 
 ## Manual
 
-A **Korean and English Splitwriter 2.0 manual** has been prepared. Public access to the manual will be provided with the upcoming 2.0 update.
+The Splitwriter 2.0 manual is available in Korean and English:
+
+- [English manual (PDF)](docs/manual/Splitwriter-Manual-v2.0-English.pdf)
+- [한국어 매뉴얼 (PDF)](docs/manual/Splitwriter-Manual-v2.0-Korean.pdf)
 
 
 ## Requirements & Getting Started
