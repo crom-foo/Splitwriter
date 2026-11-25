@@ -2,8 +2,7 @@
 import { resolveInputLocale } from "./locale";
 
 /**
- * "키보드 지원" 목적: UI 방향(RTL) 같은 건 건드리지 않고,
- * html lang + data-input-locale 만 세팅 (테스트/접근성/스펠체크 힌트용).
+ * Set the document language hint without changing the UI direction.
  */
 export function applyInputLocaleDom(inputLocale?: any) {
   try {

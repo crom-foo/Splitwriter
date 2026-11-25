@@ -36,6 +36,7 @@ export type TextToolbarProps = {
   onAlignJustify: () => void;
   onOpenEcho: () => void;
   onToolbarPointerDown?: () => void;
+  onAlignPointerDown?: () => void;
   style?: React.CSSProperties;
   className?: string;
   writingGoal?: WritingGoalProps;
@@ -135,6 +136,7 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
   onAlignJustify,
   onOpenEcho,
   onToolbarPointerDown,
+  onAlignPointerDown,
   style,
   className,
   writingGoal,
@@ -181,28 +183,28 @@ const TextToolbar: React.FC<TextToolbarProps> = ({
       <ToolBtn
         title="Align Left"
         className="tb-align-btn"
-        onPointerDown={onToolbarPointerDown}
+        onPointerDown={onAlignPointerDown}
         onClick={onAlignLeft}
         icon={ICONS.AlignLeft}
       />
       <ToolBtn
         title="Align Center"
         className="tb-align-btn"
-        onPointerDown={onToolbarPointerDown}
+        onPointerDown={onAlignPointerDown}
         onClick={onAlignCenter}
         icon={ICONS.AlignCenter}
       />
       <ToolBtn
         title="Align Right"
         className="tb-align-btn"
-        onPointerDown={onToolbarPointerDown}
+        onPointerDown={onAlignPointerDown}
         onClick={onAlignRight}
         icon={ICONS.AlignRight}
       />
       <ToolBtn
         title="Align Justify"
         className="tb-align-btn"
-        onPointerDown={onToolbarPointerDown}
+        onPointerDown={onAlignPointerDown}
         onClick={onAlignJustify}
         icon={ICONS.AlignJustify}
       />

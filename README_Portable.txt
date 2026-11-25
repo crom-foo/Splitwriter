@@ -1,4 +1,4 @@
-Splitwriter 2.0 Portable (Beta 4)
+Splitwriter 2.0 Plain (Portable)
 Windows x64
 
 GET STARTED
@@ -23,8 +23,5 @@ text or PDF. PDF export opens the Windows print window.
 WINDOWS SMARTSCREEN
 This portable build is not digitally signed. If SmartScreen appears, choose
 More info, then Run anyway.
-
-This beta is provided for evaluation. Keep backup copies of important projects
-and report bugs with the steps that reproduce them.
 
 Splitwriter is free and open source under the MIT License. See LICENSE.txt.

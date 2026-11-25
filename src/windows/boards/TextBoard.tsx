@@ -9,6 +9,8 @@ import { attachUndoCurly } from "../runtime/undo-snapshot";
 import { normalizeCurly, type CurlyPref } from "../runtime/curly";
 import { useWritingGoal } from "../runtime/writingGoal";
 import EchoReader, { countEchoChunks } from "../ui/EchoView";
+import { clipboardParagraphIndent, htmlToPlainText, markPartialSelectionStart } from "../runtime/plainText";
+import type { ParagraphIndent } from "../../shared/defaultPrefs";
 
 export type Preset = 1 | 2 | 3 | 4;
 
@@ -21,11 +23,9 @@ export type TextBoardHandle = {
   getHTML: () => string;
   setHTML: (html: string) => void;
   getText: () => string;
-  // MainUI bridge: Typewriter/Spellcheck ON/OFF
+  // MainUI bridge: Typewriter ON/OFF
   setTypewriter: (on: boolean) => void;
-  setSpellcheck: (on: boolean) => void;
   getTypewriter: () => boolean;
-  getSpellcheck: () => boolean;
   getPlainText: () => string;
 };
 
@@ -53,6 +53,7 @@ type Props = {
   /** @deprecated unused */
   presetSeq?: number;
   typefaces?: any;
+  paragraphIndent?: ParagraphIndent;
   onHUDChange?: (s: any) => void;
   writingGoal?: {
     enabled: boolean;
@@ -542,40 +543,18 @@ function placeCaretAtEnd(ed: HTMLElement) {
   sel.addRange(r);
 }
 
-function fragmentToPlainText(frag: DocumentFragment, paragraphBreak = "\n\n"): string {
-  let out = "";
-
-  const walk = (n: Node) => {
-    if (n.nodeType === 3) {            
-      out += (n.nodeValue || "");
-      return;
-    }
-    if (n.nodeType !== 1) return;
-
-    const el = n as HTMLElement;
-    if (el.tagName === "BR") {  
-      out += "\n";
-      return;
-    }
-
-    const isPara = el.matches?.(PSEL) ?? false;
-    // children
-    for (const ch of Array.from(el.childNodes)) walk(ch);
-    if (isPara) out += paragraphBreak;
-  };
-
-  for (const ch of Array.from(frag.childNodes)) walk(ch);
-
-  return out
-    .replace(/\r\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    // Keep leading spaces/tabs intact: Splitwriter should preserve author intent.
-    .replace(/^\n+|\n+$/g, "");
+function fragmentToPlainText(
+  frag: DocumentFragment,
+  paragraphBreak = "\n\n",
+  paragraphIndent?: ParagraphIndent,
+): string {
+  return htmlToPlainText(frag, paragraphIndent, paragraphBreak);
 }
 
 // === Ellipsis ===
 const ELLIPSIS_STR = "⋯"; // Midline horizontal ellipsis (U+22EF)
 const MIDDLE_DOT_STR = "·"; // Middle dot (U+00B7)
+const EM_DASH_STR = "—"; // Em dash (U+2014)
 
 function insertEllipsisAtSelection(root: HTMLElement, schedule?: () => void, onChange?: (h: string)=>void, onNudge?: ()=>void) {
   const sel = window.getSelection?.();
@@ -713,7 +692,8 @@ function getStyles(opts: { color?: string; inset?: Inset; toolbarH: number }) {
       left: inset?.left ?? 0,
       right: 0,
       bottom: 0,
-      overflow: "auto" as const,
+      overflowX: "hidden" as const,
+      overflowY: "auto" as const,
       scrollBehavior: "auto" as any,
       willChange: "scroll-position",
       contain: "layout paint",
@@ -724,6 +704,8 @@ function getStyles(opts: { color?: string; inset?: Inset; toolbarH: number }) {
       position: "relative" as const,
       width: "var(--col-width-pct, 94%)",
       maxWidth: "var(--content-max, 820px)",
+      boxSizing: "border-box" as const,
+      minWidth: 0,
       margin: "0 auto",
       padding:    "var(--pad-y, 18px) var(--pad-x, 24px)",
       transition: "none",
@@ -1178,17 +1160,19 @@ function insertPlainTextStrict(ed: HTMLElement, text: string): boolean {
     .replace(/\r\n?/g, "\n")
     .replace(/[\u2028\u2029]/g, "\n");
   const paragraphs = Array.from(ed.children);
-  const isEmptyBoard = paragraphs.length > 0 && paragraphs.every((paragraph) =>
-    paragraph instanceof HTMLElement &&
-    paragraph.matches(PSEL) &&
-    !strictHasMeaningfulContent(paragraph)
-  );
-  const isAtBoardStart = r.collapsed && textOffsetAt(ed, r.startContainer, r.startOffset) === 0;
+  const isEmptyBoard = paragraphs.length > 0 && paragraphs.every((paragraph) => {
+    if (!(paragraph instanceof HTMLElement) || !paragraph.matches(PSEL)) return false;
+    const text = (paragraph.textContent || "").replace(/[\s\u200B-\u200D\u2060\uFEFF]/g, "");
+    const hasEmbeddedContent = !!paragraph.querySelector("img,video,audio,svg,table,iframe,object");
+    return !text && !hasEmbeddedContent;
+  });
 
   // Some external sources include a leading newline in their plain-text
   // clipboard payload (sometimes preceded by a BOM or zero-width marker).
-  // Ignore it only at the start of an otherwise empty board.
-  if (isEmptyBoard && isAtBoardStart) {
+  // On an empty board, WebView's caret position inside its placeholder paragraph
+  // is not reliable enough to decide whether this is the first line, so remove it
+  // regardless of the reported caret offset.
+  if (isEmptyBoard) {
     clean = clean.replace(/^(?:[ \t\u00a0\ufeff\u200b\u2060]*\n)+/, "");
   }
   const lines = clean.split("\n");
@@ -1261,11 +1245,11 @@ function insertPlainTextStrict(ed: HTMLElement, text: string): boolean {
   return true;
 }
 
-function insertParagraphBreakStrict(ed: HTMLElement): boolean {
+function insertParagraphBreakStrict(ed: HTMLElement): HTMLElement | null {
   const sel = window.getSelection?.();
-  if (!sel || !sel.rangeCount) return false;
+  if (!sel || !sel.rangeCount) return null;
   let r = selectionRangeIn(ed);
-  if (!r) return false;
+  if (!r) return null;
 
   r.deleteContents();
   r = sel.rangeCount ? sel.getRangeAt(0) : r;
@@ -1276,7 +1260,7 @@ function insertParagraphBreakStrict(ed: HTMLElement): boolean {
     r = selectionRangeIn(ed) || r;
     curP = closestParagraph(r.startContainer) || (ed.querySelector(PSEL) as HTMLElement | null);
   }
-  if (!curP) return false;
+  if (!curP) return null;
 
   const inherit = getPresetOf(curP);
   const align = strictAlignOf(curP);
@@ -1295,7 +1279,7 @@ function insertParagraphBreakStrict(ed: HTMLElement): boolean {
   removePlaceholderBR(nextP);
   ensureParagraphNotVisuallyEmpty(nextP);
   setCaretInParagraphTextOffset(nextP, 0);
-  return true;
+  return nextP;
 }
 
 /** Join adjacent root paragraphs without rebuilding the editor or restoring a
@@ -1367,18 +1351,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const [echoStartAt, setEchoStartAt] = React.useState(0);
   const [echoStartAtByMode, setEchoStartAtByMode] = React.useState<{ SMART: number; ENTER: number }>({ SMART: 0, ENTER: 0 });
   const [echoBgSources, setEchoBgSources] = React.useState<string[] | undefined>(undefined);
-  const [echoMarkerParagraphIndex, setEchoMarkerParagraphIndex] = React.useState<number | null>(null);
+  const [hasEchoMarker, setHasEchoMarker] = React.useState(false);
   const [echoMarkerPosition, setEchoMarkerPosition] = React.useState<{ left: number; top: number } | null>(null);
   const [scenarioDialogueAnchors, setScenarioDialogueAnchors] = React.useState<Array<{ index: number; left: number; top: number }>>([]);
   const [scenarioFormatWidth, setScenarioFormatWidth] = React.useState(90);
-  const echoStartTextOffsetRef = useRef<number | null>(null);
-  const rightClickTextOffsetRef = useRef<number | null>(null);
-  const rightClickParagraphIndexRef = useRef<number | null>(null);
-  const echoMarkerParagraphIndexRef = useRef<number | null>(null);
+  const rightClickParagraphRef = useRef<HTMLElement | null>(null);
+  const echoMarkerParagraphRef = useRef<HTMLElement | null>(null);
+  const toolbarAlignRangeRef = useRef<Range | null>(null);
   const enterSnapGuardUntil = React.useRef(0);
 
   const effectiveId = props.id ?? "";
-
   useEffect(() => {
     const ed = edRef.current;
     const col = editorColRef.current;
@@ -1463,22 +1445,33 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   useEffect(() => {
     const onSetEchoStart = (event: Event) => {
       const detail = (event as CustomEvent<{ id?: string }>).detail;
-      if (detail?.id === effectiveId && rightClickTextOffsetRef.current != null) {
-        echoStartTextOffsetRef.current = rightClickTextOffsetRef.current;
-        const paragraphIndex = rightClickParagraphIndexRef.current;
-        echoMarkerParagraphIndexRef.current = paragraphIndex;
-        setEchoMarkerParagraphIndex(paragraphIndex);
+      const paragraph = rightClickParagraphRef.current;
+      if (detail?.id === effectiveId && paragraph && edRef.current?.contains(paragraph)) {
+        echoMarkerParagraphRef.current = paragraph;
+        setHasEchoMarker(true);
       }
     };
+    const onClearEchoStart = (event: Event) => {
+      const detail = (event as CustomEvent<{ id?: string }>).detail;
+      if (detail?.id !== effectiveId) return;
+      echoMarkerParagraphRef.current = null;
+      rightClickParagraphRef.current = null;
+      setHasEchoMarker(false);
+      setEchoMarkerPosition(null);
+    };
     window.addEventListener("sw:echo:set-start", onSetEchoStart);
-    return () => window.removeEventListener("sw:echo:set-start", onSetEchoStart);
+    window.addEventListener("sw:echo:clear-start", onClearEchoStart);
+    return () => {
+      window.removeEventListener("sw:echo:set-start", onSetEchoStart);
+      window.removeEventListener("sw:echo:clear-start", onClearEchoStart);
+    };
   }, [effectiveId]);
 
   const getPlainText = () => {
     const ed = edRef.current!;
     const frag = document.createDocumentFragment();
     Array.from(ed.childNodes).forEach(n => frag.appendChild(n.cloneNode(true)));
-    return fragmentToPlainText(frag);
+    return fragmentToPlainText(frag, "\n\n", props.paragraphIndent);
   };
 
   const [typingMode, setTypingMode] = React.useState<{ bold: boolean; italic: boolean }>({
@@ -1541,48 +1534,36 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     inset: (props.inset || {}) as Inset,
     toolbarH,
   });
-
   const [twOn, setTwOn] = React.useState(false);
-  const [spellOn, setSpellOn] = React.useState(false);
-  const spellOnRef = useRef(spellOn);
-  spellOnRef.current = spellOn;
 
-  // Sync twOn/spellOn states to DOM attributes
+  // Sync typewriter state to the DOM
   useEffect(() => {
     const wrap = wrapRef.current;
-    const ed   = edRef.current;
     if (wrap) {
       if (twOn) wrap.setAttribute("data-typewriter", "1");
       else wrap.removeAttribute("data-typewriter");
     }
-    if (ed) ed.setAttribute("spellcheck", spellOn ? "true" : "false");
-    if (spellOn) updateSpellScope();
-    else clearSpellScope();
-  }, [twOn, spellOn]);
+  }, [twOn]);
 
   // Observe external mutations and mirror them into local state
   useEffect(() => {
     const wrap = wrapRef.current;
-    const ed   = edRef.current;
-    if (!wrap || !ed) return;
+    if (!wrap) return;
 
     const mo = new MutationObserver(() => {
       setTwOn(wrap.getAttribute("data-typewriter") === "1");
-      setSpellOn((ed.getAttribute("spellcheck") || "false").toLowerCase() === "true");
     });
 
     mo.observe(wrap, { attributes: true, attributeFilter: ["data-typewriter"] });
-    mo.observe(ed,   { attributes: true, attributeFilter: ["spellcheck"] });
     return () => mo.disconnect();
   }, []);
 
   // Local toggle bridge within TextBoard
   useEffect(() => {
     const onToggle = (ev: Event) => {
-      const d = (ev as CustomEvent<{ id: string; type: "typewriter" | "spell" }>).detail || {};
+      const d = (ev as CustomEvent<{ id: string; type: "typewriter" }>).detail || {};
       if (d.id !== effectiveId) return;
       if (d.type === "typewriter") setTwOn(v => !v);
-      if (d.type === "spell")      setSpellOn(v => !v);
     };
     window.addEventListener("sw:text:toggle", onToggle as any, true);
     return () => window.removeEventListener("sw:text:toggle", onToggle as any, true);
@@ -1593,15 +1574,8 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   const updateEchoMarkerPosition = React.useCallback(() => {
     const ed = edRef.current;
     const editorCol = editorColRef.current;
-    const paragraphIndex = echoMarkerParagraphIndexRef.current;
-    if (!ed || !editorCol || paragraphIndex == null) {
-      setEchoMarkerPosition(null);
-      return;
-    }
-
-    const paragraphs = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
-    const paragraph = paragraphs[paragraphIndex];
-    if (!paragraph) {
+    const paragraph = echoMarkerParagraphRef.current;
+    if (!ed || !editorCol || !paragraph || !ed.contains(paragraph)) {
       setEchoMarkerPosition(null);
       return;
     }
@@ -1626,7 +1600,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     const targetHeight = targetRect.height || lineHeight;
     const dotSize = 7;
     const next = {
-      left: (textRect ? targetRect.left : paragraphRect.left) - colRect.left - 10,
+      left: (textRect ? targetRect.left : paragraphRect.left) - colRect.left - dotSize - 4,
       top: targetRect.top - colRect.top + (targetHeight - dotSize) / 2,
     };
     setEchoMarkerPosition((previous) => previous &&
@@ -1637,7 +1611,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   }, []);
 
   React.useEffect(() => {
-    if (echoMarkerParagraphIndex == null) {
+    if (!hasEchoMarker) {
       setEchoMarkerPosition(null);
       return;
     }
@@ -1648,6 +1622,13 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
     let frame = 0;
     const scheduleUpdate = () => {
+      const anchor = echoMarkerParagraphRef.current;
+      if (!anchor || !ed.contains(anchor) || !anchor.matches(PSEL)) {
+        echoMarkerParagraphRef.current = null;
+        setHasEchoMarker(false);
+        setEchoMarkerPosition(null);
+        return;
+      }
       if (frame) cancelAnimationFrame(frame);
       frame = requestAnimationFrame(() => {
         frame = 0;
@@ -1675,7 +1656,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       mutationObserver.disconnect();
       resizeObserver?.disconnect();
     };
-  }, [echoMarkerParagraphIndex, updateEchoMarkerPosition]);
+  }, [hasEchoMarker, props.paragraphIndent, updateEchoMarkerPosition]);
 
   useEffect(() => {
     const sc = scrollerRef.current;
@@ -1916,16 +1897,24 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const paras = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
 
       let startAt = 0;
-      let textOffset = echoStartTextOffsetRef.current;
-      if (textOffset == null && sel?.rangeCount) {
+      const anchorParagraph = echoMarkerParagraphRef.current;
+      const startParagraphIndex = anchorParagraph && ed.contains(anchorParagraph)
+        ? paras.indexOf(anchorParagraph)
+        : -1;
+      if (anchorParagraph && startParagraphIndex < 0) {
+        echoMarkerParagraphRef.current = null;
+        setHasEchoMarker(false);
+        setEchoMarkerPosition(null);
+      }
+      let textOffset: number | null = null;
+      if (startParagraphIndex < 0 && sel?.rangeCount) {
         const r = sel.getRangeAt(0);
         if (ed.contains(r.startContainer)) {
           textOffset = textOffsetAt(ed, r.startContainer, r.startOffset);
         }
       }
-      const startParagraphIndex = echoMarkerParagraphIndexRef.current;
       const startAtByMode = { SMART: startAt, ENTER: startAt };
-      if (startParagraphIndex != null) {
+      if (startParagraphIndex >= 0) {
         // “Set Echo View Start Here” is a paragraph-level anchor: begin at the
         // first sentence in that paragraph, regardless of the clicked character.
         for (let index = 0; index < Math.min(startParagraphIndex, paras.length); index++) {
@@ -1993,8 +1982,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
   /* Initial injection */
   useEffect(() => {
     const ed = edRef.current!;
-    if (props.initialHTML) ed.innerHTML = props.initialHTML;
-    normalizeEditorParagraphsStrict(ed, { preserveSelection: false });
+    // The editor is intentionally uncontrolled while typing. Parent state is
+    // updated from onChange, so avoid replacing its DOM when that echoed value
+    // is already present; replacing it invalidates saved toolbar caret ranges.
+    const incomingHTML = props.initialHTML || "";
+    if (ed.innerHTML !== incomingHTML) {
+      ed.innerHTML = incomingHTML;
+      normalizeEditorParagraphsStrict(ed, { preserveSelection: false });
+    } else if (!ed.querySelector(PSEL)) {
+      normalizeEditorParagraphsStrict(ed, { preserveSelection: false });
+    }
     emitHud({ preset: getPresetOf(ed.querySelector(PSEL) as HTMLElement | null) });
     props.onChange?.(ed.innerHTML);
     goal.bumpGoal();
@@ -2156,9 +2153,18 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         e.preventDefault();
         e.stopPropagation();
         const range = selectionRangeIn(ed);
-        if (!range || !closestParagraph(range.startContainer)) return;
+        const paragraph = range ? closestParagraph(range.startContainer) : null;
+        if (!range || !paragraph) return;
+        // At the start of a marked paragraph, Enter moves all of its content
+        // into the following paragraph. Keep the Echo marker attached to that
+        // content instead of the empty paragraph left behind.
+        const moveEchoMarker = echoMarkerParagraphRef.current === paragraph &&
+          caretAtParagraphBoundary(paragraph, range, "start") &&
+          strictHasMeaningfulContent(paragraph);
         markHistoryBoundary(ed);
-        if (!insertParagraphBreakStrict(ed)) return;
+        const nextParagraph = insertParagraphBreakStrict(ed);
+        if (!nextParagraph) return;
+        if (moveEchoMarker) echoMarkerParagraphRef.current = nextParagraph;
         // Typing emphasis is local to the current paragraph. Keep a false
         // override at the new caret so browser command state cannot leak the
         // previous paragraph's bold/italic mode across the split.
@@ -2210,11 +2216,11 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     const upd = () => {
       refreshTyping();
       const sel = window.getSelection();
-      if (!sel || !sel.rangeCount) return;
-      const p = getPresetOf(closestParagraph(sel.getRangeAt(0).startContainer));
-      emitHud({ preset: p });
-      applyPendingPresetIfAny();
-      updateSpellScope();
+      if (sel && sel.rangeCount && ed.contains(sel.getRangeAt(0).startContainer)) {
+        const p = getPresetOf(closestParagraph(sel.getRangeAt(0).startContainer));
+        emitHud({ preset: p });
+        applyPendingPresetIfAny();
+      }
     };
     document.addEventListener("selectionchange", upd, true);
     ed.addEventListener("keyup", upd, true);
@@ -2225,35 +2231,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       ed.removeEventListener("mouseup", upd, true);
     };
   }, []);
-
-  function updateSpellScope() {
-    const ed = edRef.current!;
-    if (!ed || !spellOnRef.current) return;
-    const paras = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
-    const r = selectionRangeIn(ed);
-    const cur = r ? (closestParagraph(r.startContainer) as HTMLElement | null) : null;
-    paras.forEach(p => {
-      if (p === cur) {
-        p.setAttribute("spellcheck", "true");
-        p.style.opacity = "";
-        p.removeAttribute("data-spell-skip");
-      } else {
-        p.setAttribute("spellcheck", "false");
-        p.style.opacity = "0.45";
-        p.setAttribute("data-spell-skip", "1");
-      }
-    });
-  }
-
-  function clearSpellScope() {
-    const ed = edRef.current;
-    if (!ed) return;
-    ed.querySelectorAll<HTMLElement>(PSEL).forEach(p => {
-      p.removeAttribute("spellcheck");
-      p.style.opacity = "";
-      p.removeAttribute("data-spell-skip");
-    });
-  }
 
   /* ---- Typewriter: gently nudge scroll to caret on type/click/IME end ---- */
   useEffect(() => {
@@ -2311,16 +2288,12 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   // MainUI가 Ref로 직접 제어할 수 있게
   const setTypewriter = (on: boolean) => setTwOn(!!on);
-  const setSpellcheck = (on: boolean) => setSpellOn(!!on);
 
   // 최신 상태를 읽게 ref 사용
   const twRef = useRef(false);
-  const spRef = useRef(false);
   useEffect(() => { twRef.current = twOn; }, [twOn]);
-  useEffect(() => { spRef.current = spellOn; }, [spellOn]);
 
   const getTypewriter = () => twRef.current;
-  const getSpellcheck = () => spRef.current;
 
   const onFocusZonePointerDown = (e: React.PointerEvent) => {
     if (e.button === 2) return; // Right-click should not move focus/caret
@@ -2363,7 +2336,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
   const align = (kind: "left" | "center" | "right" | "justify") => {
     const ed = edRef.current!;
-    restoreRecentClickCaretIfSafe();
+    const toolbarRange = toolbarAlignRangeRef.current;
+    toolbarAlignRangeRef.current = null;
+    if (toolbarRange && ed.contains(toolbarRange.startContainer) && ed.contains(toolbarRange.endContainer)) {
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(toolbarRange.cloneRange());
+    } else if (!selectionRangeIn(ed)) {
+      restoreRecentClickCaretIfSafe();
+    }
+    const savedRange = selectionRangeIn(ed)?.cloneRange() || null;
     const targets = paragraphsInSelection(ed);
     if (!targets.length) return;
     markHistoryBoundary(ed);
@@ -2371,6 +2353,14 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     ed.dispatchEvent(new InputEvent("input", { bubbles: true, inputType: "formatAlign" }));
     props.scheduleSave?.();
     props.onChange?.(ed.innerHTML);
+    if (savedRange && ed.isConnected) {
+      const selection = window.getSelection();
+      try {
+        ed.focus({ preventScroll: true } as any);
+        selection?.removeAllRanges();
+        selection?.addRange(savedRange);
+      } catch {}
+    }
   };
 
   const toggleInlineFormat = (format: InlineFormat) => {
@@ -2421,9 +2411,9 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
     ref,
     () => ({
       focus, applyPreset, align, toggleBold, toggleItalic, getHTML, setHTML, getText,
-      setTypewriter, setSpellcheck, getTypewriter, getSpellcheck, getPlainText, 
+      setTypewriter, getTypewriter, getPlainText,
     }),
-    [props.scheduleSave]
+    [props.scheduleSave, props.paragraphIndent]
   );
 
   useEffect(() => {
@@ -2533,6 +2523,19 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
         return;
       }
 
+      // Em dash: Alt + Minus
+      if (!ctrlOrMeta && alt && !shift && (code === "Minus" || key === "-")) {
+        ev.preventDefault(); ev.stopPropagation();
+        insertRawTextAtSelection(
+          ed,
+          EM_DASH_STR,
+          props.scheduleSave,
+          (h) => props.onChange?.(h),
+          () => { if (twRef.current) requestAnimationFrame(() => nudgeTypewriter(true)); }
+        );
+        return;
+      }
+
       // Middle dot: Alt + Period
       if (!ctrlOrMeta && alt && !shift && (code === "Period" || key === ".")) {
         ev.preventDefault(); ev.stopPropagation();
@@ -2608,9 +2611,10 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
       const r = sel.getRangeAt(0);
       const frag = r.cloneContents();
+      markPartialSelectionStart(frag, r);
       // Copy each editor paragraph as one plain-text line break. The default
       // paragraph spacing remains available to internal text extraction.
-      const text = fragmentToPlainText(frag, "\n");
+      const text = fragmentToPlainText(frag, "\n", clipboardParagraphIndent(props.paragraphIndent));
 
       e.preventDefault();
       e.clipboardData?.setData("text/plain", text);
@@ -2618,7 +2622,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
 
     ed.addEventListener("copy", onCopy as any);
     return () => ed.removeEventListener("copy", onCopy as any);
-  }, []);
+  }, [props.paragraphIndent]);
 
   /* ---- Undo/Redo + Curly replacement ---- */
   useEffect(() => {
@@ -2741,12 +2745,6 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       } catch {}
       const pointIsInsideEditor = !!pointRange && ed.contains(pointRange.startContainer);
       const activeRange = selectionRangeIn(ed);
-      const rangeForOffset = pointIsInsideEditor
-        ? pointRange
-        : activeRange?.collapsed ? activeRange : null;
-      rightClickTextOffsetRef.current = rangeForOffset
-        ? textOffsetAt(ed, rangeForOffset.startContainer, rangeForOffset.startOffset)
-        : null;
 
       const hit = doc.elementFromPoint(e.clientX, e.clientY) as HTMLElement | null;
       const hitParagraph = hit?.closest(PSEL) as HTMLElement | null;
@@ -2760,9 +2758,7 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
       const targetParagraph = eventParagraph ||
         (hitParagraph && ed.contains(hitParagraph) ? hitParagraph : null) ||
         pointParagraph || activeParagraph;
-      const paragraphs = Array.from(ed.querySelectorAll<HTMLElement>(PSEL));
-      const paragraphIndex = targetParagraph ? paragraphs.indexOf(targetParagraph) : -1;
-      rightClickParagraphIndexRef.current = paragraphIndex >= 0 ? paragraphIndex : null;
+      rightClickParagraphRef.current = targetParagraph && ed.contains(targetParagraph) ? targetParagraph : null;
 
       const off = getOffsetsIn(ed, window.getSelection?.() || null);
       if (off) lastSelRef.current = off;
@@ -2873,6 +2869,9 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
             // from stealing selection; forcing focus is what makes middle-paragraph
             // preset changes collapse to the document start in WebView.
           }}
+          onAlignPointerDown={() => {
+            toolbarAlignRangeRef.current = selectionRangeIn(edRef.current!)?.cloneRange() || null;
+          }}
           writingGoal={
             goal.goalEnabled
               ? {
@@ -2909,13 +2908,16 @@ export default forwardRef<TextBoardHandle, Props>(function TextBoard(props, ref)
             contentEditable
             suppressContentEditableWarning
             data-placeholder="Write here…"
-            spellCheck={spellOn}
+            spellCheck={false}
             tabIndex={0}
             style={{
               outline: "none",
+              boxSizing: "border-box",
+              width: "100%",
               whiteSpace: "pre-wrap",
               tabSize: 2,
-              wordBreak: "break-word",
+              overflowWrap: "anywhere",
+              wordBreak: "normal",
               minHeight: 0,
               padding: "10px 14px",
               color: "var(--text-1)",

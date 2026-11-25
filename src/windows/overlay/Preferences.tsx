@@ -72,7 +72,7 @@ export function usePreferences() {
           accentColor: parsed.accentColor ?? DEFAULT_PREFS.accentColor,
           manuscriptGapLines: parsed.manuscriptGapLines ?? DEFAULT_PREFS.manuscriptGapLines,
           writingGoal: parsed.writingGoal ?? DEFAULT_PREFS.writingGoal,
-          bracket: parsed.bracket ?? DEFAULT_PREFS.bracket,
+          bracket: parsed.bracket ? stripLegacyBrackets(parsed.bracket) : DEFAULT_PREFS.bracket,
           theme: (parsed as any)?.theme ?? DEFAULT_PREFS.theme,
           inputLocale: (parsed as any)?.inputLocale ?? (DEFAULT_PREFS as any).inputLocale ?? "auto",
         };
@@ -454,7 +454,9 @@ const STRINGS = {
     fonts: "Typeface Presets (v4)",
     fontsHint: "Ctrl/Cmd + 1·2·3·4 to switch (Headline / Body / Accent / Etc)",
     indentTitle: "Paragraph Indentation",
-    indentDesc: "Indent the first line of paragraphs using checked typeface presets.",
+    indentDesc: "Indent paragraph starts using the selected typeface presets.",
+    indentEnable: "Enable paragraph indentation",
+    indentCopy: "Include indentation when copying with Ctrl+C",
     indentWidth: "Indent width (spaces)",
     indentPreset: "Indent",
     headline: "Headline",
@@ -467,7 +469,6 @@ const STRINGS = {
     bracket: "Curly Braces Replacement",
     bracketDesc: "Replace { and } while typing.",
     enable: "Enable",
-    none: "None",
     doubleCorner: "『 』 (double corner)",
     doubleAngle: "≪ ≫ (double angle)",
     singleCorner: "｢ ｣ (single corner)",
@@ -524,7 +525,7 @@ function buildFallbackFonts(): FontDict {
 }
 function stripLegacyBrackets(b: any): Preferences["bracket"] {
   const style: Preferences["bracket"]["style"] =
-    ["none", "doubleCorner", "doubleAngle", "singleCorner", "singleAngle"].includes(b?.style) ? b.style : "none";
+    ["doubleCorner", "doubleAngle", "singleCorner", "singleAngle"].includes(b?.style) ? b.style : "doubleCorner";
   return { enable: !!b?.enable, style };
 }
 function validateHex(s: string): string | null {
@@ -1373,8 +1374,8 @@ export function PreferenceModal({
                       fontSize: 12,
                       lineHeight: "16px",
                     }}
-                    title="Writing / Spell-check Language"
-                    aria-label="Writing / Spell-check Language"
+                    title="Writing language"
+                    aria-label="Writing language"
                   >
                     {INPUT_LOCALES.map((opt) => (
                       <Option key={opt.id} value={opt.id}>
@@ -1484,7 +1485,7 @@ export function PreferenceModal({
               }}
             >
               <p className="mx-auto -mt-2 text-xs" style={{ ...sharedMax, color: "var(--prefs-text-sub, var(--text-2))" }}>
-                Writing / Spell-check Language sets a document language hint. Keyboard layout follows your operating system settings.
+                Writing language sets a document language hint. Keyboard layout follows your operating system settings.
               </p>
 
               {/* Working Folder */}
@@ -1583,13 +1584,35 @@ export function PreferenceModal({
               <hr className="border-t" style={{ borderColor: "var(--divider)" }} />
 
               {/* Paragraph indentation */}
-              <section className="space-y-2 mx-auto" style={sharedMax}>
-                <label className="flex items-center gap-2 text-sm">
-                  <span>{t.indentTitle}</span>
-                </label>
-                <p className="text-xs" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
-                  {t.indentDesc}
-                </p>
+              <section className="space-y-3 mx-auto" style={sharedMax}>
+                <div className="grid grid-cols-[1fr_auto] items-center gap-3">
+                  <div>
+                    <label className="flex items-center gap-2 text-sm">
+                      <span>{t.indentTitle}</span>
+                    </label>
+                    <p className="text-xs mt-1" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
+                      {t.indentDesc}
+                    </p>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label={t.indentEnable}
+                    aria-checked={prefs.paragraphIndent.enabled}
+                    onClick={() => set({ paragraphIndent: { ...prefs.paragraphIndent, enabled: !prefs.paragraphIndent.enabled } })}
+                    className="relative h-6 w-12 rounded-full border transition-colors"
+                    style={{
+                      backgroundColor: prefs.paragraphIndent.enabled ? hexA(ACC, 0.25) : "rgba(255,255,255,0.05)",
+                      borderColor: prefs.paragraphIndent.enabled ? hexA(ACC, 0.4) : "rgba(255,255,255,0.15)",
+                    }}
+                    title={prefs.paragraphIndent.enabled ? "ON" : "OFF"}
+                  >
+                    <span
+                      className="absolute top-1/2 -translate-y-1/2 h-4 w-4 rounded-full bg-white shadow transition-[left]"
+                      style={{ left: prefs.paragraphIndent.enabled ? 28 : 4 }}
+                    />
+                  </button>
+                </div>
                 <div className="grid grid-cols-[1fr_140px] items-center gap-3">
                   <label className="text-xs" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
                     {t.indentWidth}
@@ -1604,6 +1627,16 @@ export function PreferenceModal({
                     ))}
                   </Select>
                 </div>
+                <label className="flex items-center gap-2 text-xs cursor-pointer" style={{ color: "var(--prefs-text-sub, var(--text-2))" }}>
+                  <input
+                    type="checkbox"
+                    checked={prefs.paragraphIndent.copyEnabled}
+                    aria-label={t.indentCopy}
+                    onChange={(e) => set({ paragraphIndent: { ...prefs.paragraphIndent, copyEnabled: e.target.checked } })}
+                    style={{ accentColor: ACC, width: 15, height: 15, cursor: "pointer" }}
+                  />
+                  <span>{t.indentCopy}</span>
+                </label>
               </section>
 
               <hr className="border-t" style={{ borderColor: "var(--divider)" }} />
@@ -1982,7 +2015,6 @@ export function PreferenceModal({
                     }
                     disabled={!prefs.bracket.enable}
                   >
-                    <Option value="none">{t.none}</Option>
                     <Option value="doubleCorner">{t.doubleCorner}</Option>
                     <Option value="doubleAngle">{t.doubleAngle}</Option>
                     <Option value="singleCorner">{t.singleCorner}</Option>

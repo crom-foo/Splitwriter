@@ -193,7 +193,7 @@ export default function SplitPane({
         position: "absolute",
         top: 0,
         bottom: 0,
-        left: `calc(${R * 100}% + ${gutterSize / 2}px - ${HIT / 2}px)`, // 가터 중앙 보정
+        left: `clamp(${minA + gutterSize / 2 - HIT / 2}px, calc(${R * 100}% + ${gutterSize / 2}px - ${HIT / 2}px), calc(100% - ${minB + gutterSize / 2 + HIT / 2}px))`,
         width: HIT,
         cursor: "col-resize",
         zIndex: 10,
@@ -204,7 +204,7 @@ export default function SplitPane({
         position: "absolute",
         left: 0,
         right: 0,
-        top: `calc(${R * 100}% + ${gutterSize / 2}px - ${HIT / 2}px)`,
+        top: `clamp(${minA + gutterSize / 2 - HIT / 2}px, calc(${R * 100}% + ${gutterSize / 2}px - ${HIT / 2}px), calc(100% - ${minB + gutterSize / 2 + HIT / 2}px))`,
         height: HIT,
         cursor: "row-resize",
         zIndex: 10,
@@ -227,7 +227,9 @@ export default function SplitPane({
     const rect = root.getBoundingClientRect();
     const size = isVert ? rect.width : rect.height;
     const axis0 = isVert ? e.clientX : e.clientY;
-    dragRef.current = { size, start: R * size, axis0 };
+    const aRect = aCellRef.current?.getBoundingClientRect();
+    const start = aRect ? (isVert ? aRect.width : aRect.height) : R * size;
+    dragRef.current = { size, start, axis0 };
 
     onDragStart?.();
   };

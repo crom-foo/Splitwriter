@@ -231,7 +231,7 @@ export type SwonIO = {
   clearDirty(): void;
   isDirty(): boolean;
   canQuickSave(): boolean;
-  save(): Promise<void | string | null>;
+  save(options?: { createBackup?: boolean; autoSave?: boolean }): Promise<void | string | null>;
   saveAs(): Promise<void | string | null>;
   open(): Promise<void | string | null>;
   openAt(absPath: string): Promise<void | string | null>; // helper for e.g. sidebar double-click
@@ -290,23 +290,35 @@ function mergePrefsKeepingGlobals(current: any, incoming: any): any {
 }
 
 export function setupSwonIO(opts: Opts): SwonIO {
+  // `dirty` tracks edits since the last manual save and is used for Ctrl+S backups.
   let dirty = false;
+  // Autosave and unsaved-change guards use their own state so autosave can clear
+  // its pending write without consuming the manual-save dirty flag.
+  let autosaveDirty = false;
+  // Keep the last manual-save version in memory because autosave overwrites disk.
+  let manualSaveSnapshot: string | null = null;
   let fileHandle: any | null = null; // Web: File System Access API handle
   let diskPath: string | null = null; // Tauri: absolute path chosen by the user
   let fileName: string | null = null; // Title hint only
 
   const markDirty = () => {
     dirty = true;
+    autosaveDirty = true;
     bumpTitle(true);
   };
   const clearDirty = () => {
     dirty = false;
+    autosaveDirty = false;
     bumpTitle(false);
   };
-  const isDirty = () => dirty;
+  const clearAutosaveDirty = () => {
+    autosaveDirty = false;
+    bumpTitle(false);
+  };
+  const isDirty = () => autosaveDirty;
 
   /** Update window title with an asterisk when there are unsaved edits. */
-  const bumpTitle = (d = dirty) => {
+  const bumpTitle = (d = autosaveDirty) => {
     try {
       const base = fileName || "untitled";
       document.title = `${base}${d ? " *" : ""} — Splitwriter`;
@@ -485,6 +497,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       await writeTextFile(target, text);
       diskPath = target; // allow Ctrl+S afterwards
       fileHandle = null;
+      manualSaveSnapshot = text;
       setFileNameFromPath(target);
       clearDirty();
       syncCurrentFileGlobals();
@@ -508,6 +521,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       await w.write(text);
       await w.close();
       fileHandle = handle;
+      manualSaveSnapshot = text;
       fileName =
         (handle as any).name?.replace(/\.swon$/i, "") ||
         fileName ||
@@ -528,6 +542,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       URL.revokeObjectURL(a.href);
       a.remove();
     }, 0);
+    manualSaveSnapshot = text;
     clearDirty();
     opts.notify(
       `Saved${fileName ? `: ${fileName}.swon` : ""}`,
@@ -537,12 +552,16 @@ export function setupSwonIO(opts: Opts): SwonIO {
   }
 
   /** Save to the last known location if possible; otherwise fall back to Save As. */
-  async function save() {
+  async function save(options: { createBackup?: boolean; autoSave?: boolean } = {}) {
     const text = serialize();
+    // Every explicit/manual save shares the same backup behavior. Only the
+    // autosave path opts out; callers may also explicitly disable backups.
+    const createBackup = !options.autoSave && options.createBackup !== false;
+    let backupStatus: "created" | "failed" | null = null;
 
     // Tauri
     if ((window as any).__TAURI_IPC__) {
-      const { writeTextFile } = await import("@tauri-apps/api/fs");
+      const { writeTextFile, exists, createDir, readDir, copyFile, removeFile } = await import("@tauri-apps/api/fs");
       const { save } = await import("@tauri-apps/api/dialog");
       if (!diskPath) {
         const picked = await save({
@@ -553,14 +572,56 @@ export function setupSwonIO(opts: Opts): SwonIO {
         diskPath = ensureSwonExt(String(picked));
         setFileNameFromPath(diskPath);
       }
+      if (createBackup && dirty && await exists(diskPath)) {
+        try {
+          const sep = diskPath.includes("\\") ? "\\" : "/";
+          const lastSep = Math.max(diskPath.lastIndexOf("\\"), diskPath.lastIndexOf("/"));
+          const parent = lastSep >= 0 ? diskPath.slice(0, lastSep) : ".";
+          const originalName = diskPath.slice(lastSep + 1);
+          const stem = originalName.replace(/\.swon$/i, "");
+          const backupDir = `${parent}${sep}_Backups`;
+          await createDir(backupDir, { recursive: true });
+          const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+          let backupPath = `${backupDir}${sep}${stem}.${stamp}.swon`;
+          let suffix = 1;
+          while (await exists(backupPath)) {
+            backupPath = `${backupDir}${sep}${stem}.${stamp}-${suffix++}.swon`;
+          }
+          if (manualSaveSnapshot != null) await writeTextFile(backupPath, manualSaveSnapshot);
+          else await copyFile(diskPath, backupPath);
+          backupStatus = "created";
+
+          const entries = await readDir(backupDir);
+          const prefix = `${stem}.`;
+          const backups = entries
+            .filter((entry) => entry.name && entry.name.startsWith(prefix) && /\.swon$/i.test(entry.name))
+            .map((entry) => entry.name!)
+            .sort((a, b) => b.localeCompare(a));
+          for (const oldBackup of backups.slice(10)) {
+            await removeFile(`${backupDir}${sep}${oldBackup}`);
+          }
+        } catch (error) {
+          backupStatus = "failed";
+          console.error("Could not create the manual-save backup:", error);
+        }
+      }
       await writeTextFile(diskPath, text);
       if (!fileName || fileName === "untitled") setFileNameFromPath(diskPath);
-      clearDirty();
+      if (options.autoSave || (createBackup && backupStatus === "failed")) {
+        // A failed backup must remain retryable even though the project itself
+        // was saved successfully.
+        clearAutosaveDirty();
+      } else {
+        manualSaveSnapshot = text;
+        clearDirty();
+      }
       syncCurrentFileGlobals();
+      const savedLabel = `Saved${fileName ? `: ${fileName}.swon` : ""}`;
       opts.notify(
-        `Saved${fileName ? `: ${fileName}.swon` : ""}`,
-        "info",
-        1400
+        backupStatus === "created" ? `${savedLabel} (backup created)` :
+          backupStatus === "failed" ? `${savedLabel} — backup failed` : savedLabel,
+        backupStatus === "failed" ? "warn" : "info",
+        1800
       );
       return diskPath;
     }
@@ -570,7 +631,11 @@ export function setupSwonIO(opts: Opts): SwonIO {
       const w = await (fileHandle as any).createWritable();
       await w.write(text);
       await w.close();
-      clearDirty();
+      if (options.autoSave) clearAutosaveDirty();
+      else {
+        manualSaveSnapshot = text;
+        clearDirty();
+      }
       opts.notify(
         `Saved${fileName ? `: ${fileName}.swon` : ""}`,
         "info",
@@ -590,7 +655,11 @@ export function setupSwonIO(opts: Opts): SwonIO {
       URL.revokeObjectURL(a.href);
       a.remove();
     }, 0);
-    clearDirty();
+    if (options.autoSave) clearAutosaveDirty();
+    else {
+      manualSaveSnapshot = text;
+      clearDirty();
+    }
     opts.notify(
       `Saved${fileName ? `: ${fileName}.swon` : ""}`,
       "info",
@@ -615,6 +684,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       const data = JSON.parse(text) as SwonFile;
       if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
       applySwon(data, /* bump */ true);
+      manualSaveSnapshot = raw;
       diskPath = picked;
       fileHandle = null;
       try {
@@ -647,6 +717,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
         const data = JSON.parse(text) as SwonFile;
         if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
         applySwon(data, /* bump */ true);
+        manualSaveSnapshot = raw;
         fileHandle = handle;
         fileName =
           (handle as any).name?.replace(/\.swon$/i, "") ||
@@ -671,6 +742,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
       const data = JSON.parse(text) as SwonFile;
       if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
       applySwon(data, /* bump */ true);
+      manualSaveSnapshot = raw;
       fileHandle = null;
       diskPath = null;
       fileName =
@@ -694,6 +766,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
     if (data.kind !== "splitwriter") throw new Error("Not a SWON file");
 
     applySwon(data, /* bump */ true);
+    manualSaveSnapshot = raw;
     diskPath = absPath;
     fileHandle = null;
 
@@ -729,6 +802,7 @@ export function setupSwonIO(opts: Opts): SwonIO {
     fileHandle = null;
     diskPath = null;
     fileName = "untitled";
+    manualSaveSnapshot = null;
     clearDirty();
     syncCurrentFileGlobals();
     opts.notify(`New file`, "info", 1200);

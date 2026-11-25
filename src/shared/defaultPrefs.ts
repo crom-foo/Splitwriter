@@ -6,6 +6,8 @@ export type FontTriplet = {
 };
 
 export type ParagraphIndent = {
+  enabled: boolean;
+  copyEnabled: boolean;
   spaces: number;
   headline: boolean;
   body: boolean;
@@ -17,6 +19,8 @@ export function normalizeParagraphIndent(value: unknown): ParagraphIndent {
   const raw = value && typeof value === "object" ? value as Partial<ParagraphIndent> : {};
   const spaces = Number(raw.spaces);
   return {
+    enabled: raw.enabled !== false,
+    copyEnabled: raw.copyEnabled !== false,
     spaces: Number.isFinite(spaces) ? Math.max(1, Math.min(8, Math.round(spaces))) : 2,
     headline: raw.headline === true,
     body: raw.body ?? true,
@@ -84,10 +88,10 @@ export const DEFAULT_PREFS: Preferences = {
     accent:   { name: SYSTEM_STACK, style: "Regular", size: 16 },
     etc:      { name: SYSTEM_STACK, style: "Regular", size: 13 },
   },
-  paragraphIndent: { spaces: 2, headline: false, body: true, accent: false, etc: false },
+  paragraphIndent: { enabled: true, copyEnabled: true, spaces: 2, headline: false, body: true, accent: false, etc: false },
   accentColor: "#2AA4FF",
   manuscriptGapLines: 1,
-  bracket: { enable: false, style: "none" },
+  bracket: { enable: false, style: "doubleCorner" },
   writingGoal: { enabled: false, unit: "chars", target: 5000 },
 };
 

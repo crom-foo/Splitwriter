@@ -1,4 +1,6 @@
 import React from "react";
+import { clipboardParagraphIndent, htmlToPlainText, markPartialSelectionStart } from "../runtime/plainText";
+import type { ParagraphIndent } from "../../shared/defaultPrefs";
 
 type Props = {
   boardIds: string[];
@@ -7,6 +9,7 @@ type Props = {
   getBoardName: (id: string) => string;
   onExportTxt: () => void;
   onExportPdf: () => void;
+  paragraphIndent?: ParagraphIndent;
 };
 
 function cleanHTML(source: string): string {
@@ -84,7 +87,7 @@ function cleanHTML(source: string): string {
   return template.innerHTML;
 }
 
-export default function ManuscriptBoard({ boardIds, gapLines = 1, getHTML, getBoardName, onExportTxt, onExportPdf }: Props) {
+export default function ManuscriptBoard({ boardIds, gapLines = 1, getHTML, getBoardName, onExportTxt, onExportPdf, paragraphIndent }: Props) {
   const [revision, setRevision] = React.useState(0);
   const [exportMenuOpen, setExportMenuOpen] = React.useState(false);
   const [exportButtonHovered, setExportButtonHovered] = React.useState(false);
@@ -148,6 +151,22 @@ export default function ManuscriptBoard({ boardIds, gapLines = 1, getHTML, getBo
       window.removeEventListener("resize", updateCurrentBoard);
     };
   }, [updateCurrentBoard]);
+
+  React.useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const onCopy = (event: ClipboardEvent) => {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount || !selection.toString() || !scroller.contains(selection.anchorNode)) return;
+      const range = selection.getRangeAt(0);
+      const fragment = range.cloneContents();
+      markPartialSelectionStart(fragment, range);
+      event.preventDefault();
+      event.clipboardData?.setData("text/plain", htmlToPlainText(fragment, clipboardParagraphIndent(paragraphIndent), "\n"));
+    };
+    scroller.addEventListener("copy", onCopy);
+    return () => scroller.removeEventListener("copy", onCopy);
+  }, [paragraphIndent]);
 
   React.useEffect(() => {
     updateCurrentBoard();

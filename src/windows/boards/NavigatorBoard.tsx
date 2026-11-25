@@ -1,6 +1,6 @@
 import React from "react";
 import { createPortal } from "react-dom";
-import { beginNavigatorBoardDrag, endNavigatorBoardDrag, hasActiveNavigatorBoardDrag, readNavigatorBoardDrag, type BoardGroup } from "./boardDrag";
+import { beginNavigatorBoardDrag, beginNavigatorGroupDrag, endNavigatorBoardDrag, hasActiveNavigatorBoardDrag, hasActiveNavigatorGroupDrag, readNavigatorBoardDrag, readNavigatorGroupDrag, type BoardGroup } from "./boardDrag";
 
 export type NavigatorTextItem = {
   id: string;
@@ -33,6 +33,7 @@ type Props = {
   onDuplicateBoard: (id: string, group: BoardGroup) => void;
   onRenameGroup: (id: string, group: BoardGroup, name: string) => void;
   onDeleteBoard: (id: string, group: BoardGroup) => void;
+  onDeleteBoards: (ids: string[], group: BoardGroup) => void;
   onGroupSelected: (ids: string[], group: BoardGroup) => string | null;
   onUngroupSelected: (ids: string[], group: BoardGroup) => string[];
   onToggleGroup: (id: string, group: BoardGroup) => void;
@@ -40,6 +41,7 @@ type Props = {
     boardId: string; sourceGroup: BoardGroup; targetGroup: BoardGroup;
     targetId: string | null; targetParentGroupId: string | null; position: "before" | "after";
   }) => void;
+  onMoveGroup: (move: { groupId: string; sourceGroup: BoardGroup; targetGroup: BoardGroup; targetId: string | null; position: "before" | "after" }) => void;
   accentColor?: string;
   manuscriptOpen: boolean;
   onToggleManuscript: () => void;
@@ -69,10 +71,12 @@ export default function NavigatorBoard({
   onDuplicateBoard,
   onRenameGroup,
   onDeleteBoard,
+  onDeleteBoards,
   onGroupSelected,
   onUngroupSelected,
   onToggleGroup,
   onMoveBoard,
+  onMoveGroup,
   accentColor,
   manuscriptOpen,
   onToggleManuscript,
@@ -82,6 +86,7 @@ export default function NavigatorBoard({
   const [, setContentRevision] = React.useState(0);
   const navigatorRootRef = React.useRef<HTMLElement>(null);
   const [contextMenuOwner, setContextMenuOwner] = React.useState<BoardGroup | null>(null);
+  const [ungroupDropActive, setUngroupDropActive] = React.useState<BoardGroup | null>(null);
   const variantInputRef = React.useRef<HTMLInputElement>(null);
   const suppressVariantClickRef = React.useRef(false);
   const cancelVariantRenameRef = React.useRef(false);
@@ -93,17 +98,26 @@ export default function NavigatorBoard({
   const [pendingDelete, setPendingDelete] = React.useState<
     | { type: "draft"; id: string; name: string }
     | { type: "board"; id: string; name: string; group: BoardGroup }
+    | { type: "boards"; ids: string[]; names: string[]; group: BoardGroup }
     | null
   >(null);
+  const writingBoardIds = writing.flatMap((item) => item.kind === "group"
+    ? (item.children || []).flatMap((child) => child.kind === "group" ? (child.children || []).map((nested) => nested.id) : [child.id])
+    : [item.id]);
+  const pendingMultiDeleteBlocked = pendingDelete?.type === "boards"
+    && pendingDelete.group === "writing"
+    && (pendingDelete.ids.includes(protectedWritingBoardId || "")
+      || (writingBoardIds.length > 0 && writingBoardIds.every((id) => pendingDelete.ids.includes(id))));
   const [deleteTargetRects, setDeleteTargetRects] = React.useState<Array<{ left: number; top: number; width: number; height: number }>>([]);
   React.useEffect(() => {
-    if (pendingDelete?.type !== "board") {
+    if (pendingDelete?.type !== "board" && pendingDelete?.type !== "boards") {
       setDeleteTargetRects([]);
       return;
     }
+    const targetIds = new Set(pendingDelete.type === "board" ? [pendingDelete.id] : pendingDelete.ids);
     const panes = new Set<HTMLElement>();
     document.querySelectorAll<HTMLElement>("[data-board-id]").forEach((board) => {
-      if (board.dataset.boardId === pendingDelete.id) {
+      if (targetIds.has(board.dataset.boardId || "")) {
         const pane = board.closest<HTMLElement>("[data-sw-leaf-id]");
         if (pane) panes.add(pane);
       }
@@ -135,6 +149,49 @@ export default function NavigatorBoard({
   React.useEffect(() => {
     if (editingVariantId) variantInputRef.current?.focus();
   }, [editingVariantId]);
+  React.useEffect(() => {
+    // WebView2 briefly shows its forbidden cursor when entering each draggable
+    // row, before the first dragover. Accept at both native event boundaries.
+    const acceptNavigatorDrag = (event: DragEvent) => {
+      const boardDrag = hasActiveNavigatorBoardDrag();
+      const groupDrag = hasActiveNavigatorGroupDrag();
+      if (!boardDrag && !groupDrag) return;
+      const target = event.target;
+      const element = target instanceof Element ? target : null;
+      const section = element?.closest<HTMLElement>("[data-sw-navigator-group]");
+      const draftZone = element?.closest<HTMLElement>("[data-sw-navigator-draft-drop-blocker]");
+      if (boardDrag && draftZone) {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+        return;
+      }
+      const root = navigatorRootRef.current;
+      if (boardDrag && element && root?.contains(element)) {
+        // Keep native drag feedback stable across Navigator controls, row
+        // borders, and the blank strip below the final Notes drop target.
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        return;
+      }
+      const accepted = groupDrag && !!section
+        && section.dataset.swNavigatorGroup === window.__SW_NAVIGATOR_GROUP_DRAG__?.group;
+      if (accepted) {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+        return;
+      }
+      if (groupDrag && element && root?.contains(element)) {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = "none";
+      }
+    };
+    document.addEventListener("dragenter", acceptNavigatorDrag, true);
+    document.addEventListener("dragover", acceptNavigatorDrag, true);
+    return () => {
+      document.removeEventListener("dragenter", acceptNavigatorDrag, true);
+      document.removeEventListener("dragover", acceptNavigatorDrag, true);
+    };
+  }, []);
 
   const renderVariantTab = (variant: { id: string; name: string }) => {
     const selected = variant.id === activeWritingVariantId;
@@ -199,6 +256,13 @@ export default function NavigatorBoard({
       aria-label="Navigator"
       data-sw-navigator-root="1"
       ref={navigatorRootRef}
+      onDropCapture={(event) => {
+        if (!hasActiveNavigatorBoardDrag()) return;
+        const target = event.target as Element;
+        if (target.closest("[data-sw-navigator-group], [data-sw-navigator-ungroup]")) return;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
       onKeyDown={(event) => {
         const target = event.target as HTMLElement;
         if (target.tagName === "INPUT") return;
@@ -229,7 +293,9 @@ export default function NavigatorBoard({
       }}
       onBlurCapture={(event) => {
         const nextTarget = event.relatedTarget as Node | null;
-        if (!nextTarget || !event.currentTarget.contains(nextTarget)) onClearSelection();
+        const isNavigatorMenu = nextTarget instanceof Element
+          && nextTarget.closest("[data-sw-navigator-context-menu]");
+        if (!nextTarget || (!event.currentTarget.contains(nextTarget) && !isNavigatorMenu)) onClearSelection();
       }}
       style={{
         width: "100%",
@@ -287,8 +353,18 @@ export default function NavigatorBoard({
           }
         />
       </header>
-      <div style={{ minHeight: 0, overflow: "auto", padding: "8px 8px 10px" }}>
-        <div role="tablist" aria-label="Writing order" style={{ display: "flex", alignItems: "flex-start", gap: 4, margin: "0 2px 9px", minHeight: 32, minWidth: 0 }}>
+      <div style={{ minHeight: 0, overflow: "auto", padding: "8px 8px 10px", display: "flex", flexDirection: "column" }}>
+      <div
+          role="tablist"
+          aria-label="Writing order"
+          data-sw-navigator-draft-drop-blocker="1"
+          onDropCapture={(event) => {
+            if (!hasActiveNavigatorBoardDrag()) return;
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          style={{ display: "flex", alignItems: "flex-start", gap: 4, margin: "0 2px", paddingBottom: 9, boxSizing: "border-box", minHeight: 32, minWidth: 0 }}
+        >
           {writingVariants.filter((variant) => variant.id === "main").map(renderVariantTab)}
           <div className="navigator-draft-tabs-scroll" style={{ flex: "1 1 0", minWidth: 0, overflowX: "auto", overflowY: "hidden", scrollbarWidth: "thin", scrollbarColor: "var(--scrollbar-thumb, #b8bec8) transparent" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 3, width: "max-content", minWidth: "100%", minHeight: 30 }}>
@@ -326,24 +402,125 @@ export default function NavigatorBoard({
               <div style={{ fontSize: 12, lineHeight: 1.5, color: "var(--text-2)", marginBottom: 18 }}>
                 {pendingDelete.type === "draft"
                   ? `Are you sure you want to delete “${pendingDelete.name}”?`
-                  : pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId
+                  : pendingDelete.type === "boards"
+                    ? pendingMultiDeleteBlocked
+                      ? "At least one Writing board must remain. Remove a board from the selection and try again."
+                      : <>
+                          Are you sure you want to delete these {pendingDelete.ids.length} boards? This cannot be undone.
+                          <div style={{ marginTop: 8, maxHeight: 96, overflowY: "auto", color: "var(--text-1)" }}>{pendingDelete.names.join(", ")}</div>
+                        </>
+                    : pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId
                     ? "At least one Writing board must remain. This board cannot be deleted."
                     : `Are you sure you want to delete “${pendingDelete.name}”? This cannot be undone.`}
               </div>
               <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                 <button type="button" onClick={() => setPendingDelete(null)} style={{ padding: "6px 12px", border: "1px solid var(--border)", borderRadius: 5, background: "var(--btn-bg)", color: "var(--text-1)", font: "inherit", fontSize: 12, cursor: "pointer" }}>Cancel</button>
-                <button type="button" disabled={pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId} onClick={() => {
+                <button type="button" disabled={(pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId) || pendingMultiDeleteBlocked} onClick={() => {
                   if (pendingDelete.type === "draft") onDeleteWritingVariant(pendingDelete.id);
+                  else if (pendingDelete.type === "boards") onDeleteBoards(pendingDelete.ids, pendingDelete.group);
                   else onDeleteBoard(pendingDelete.id, pendingDelete.group);
                   setPendingDelete(null);
-                }} style={{ padding: "6px 12px", border: "1px solid color-mix(in srgb, #e35d5d 55%, transparent)", borderRadius: 5, background: "color-mix(in srgb, #e35d5d 16%, transparent)", color: "var(--text-1)", opacity: pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId ? .45 : 1, font: "inherit", fontSize: 12, cursor: pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId ? "default" : "pointer" }}>Confirm</button>
+                }} style={{ padding: "6px 12px", border: "1px solid color-mix(in srgb, #e35d5d 55%, transparent)", borderRadius: 5, background: "color-mix(in srgb, #e35d5d 16%, transparent)", color: "var(--text-1)", opacity: ((pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId) || pendingMultiDeleteBlocked) ? .45 : 1, font: "inherit", fontSize: 12, cursor: ((pendingDelete.type === "board" && pendingDelete.group === "writing" && pendingDelete.id === protectedWritingBoardId) || pendingMultiDeleteBlocked) ? "default" : "pointer" }}>Confirm</button>
               </div>
             </section>
           </div>
           </>, document.body
         )}
-        <NavigatorSection title="Writing" group="writing" items={writing} activeId={activeId} selectedIds={selectedIds} protectedWritingBoardId={protectedWritingBoardId} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onDuplicateBoard={onDuplicateBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("writing")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("writing")} isContextMenuOwner={contextMenuOwner === "writing"} />
-        <NavigatorSection title="Notes" group="notes" items={notes} activeId={activeId} selectedIds={selectedIds} protectedWritingBoardId={protectedWritingBoardId} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onDuplicateBoard={onDuplicateBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("notes")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("notes")} isContextMenuOwner={contextMenuOwner === "notes"} />
+        <NavigatorSection title="Writing" group="writing" items={writing} activeId={activeId} selectedIds={selectedIds} protectedWritingBoardId={protectedWritingBoardId} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onDuplicateBoard={onDuplicateBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onRequestDeleteBoards={(ids, names, group) => setPendingDelete({ type: "boards", ids, names, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onMoveGroup={onMoveGroup} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("writing")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("writing")} isContextMenuOwner={contextMenuOwner === "writing"} />
+        <div
+          role="presentation"
+          aria-label="Move board out of group"
+          data-sw-navigator-ungroup="writing"
+          onDragOver={(event) => {
+            if (!hasActiveNavigatorBoardDrag()) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setUngroupDropActive("writing");
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setUngroupDropActive((active) => active === "writing" ? null : active);
+          }}
+          onDrop={(event) => {
+            const payload = readNavigatorBoardDrag(event.dataTransfer);
+            if (!payload) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onMoveBoard({
+              boardId: payload.boardId,
+              sourceGroup: payload.group,
+              targetGroup: payload.group,
+              targetId: null,
+              targetParentGroupId: null,
+              position: "after",
+            });
+            setUngroupDropActive(null);
+          }}
+          style={{
+            minHeight: 22,
+            margin: "-9px 0 5px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderTop: `1px ${ungroupDropActive === "writing" ? "dashed" : "solid"} ${ungroupDropActive === "writing" ? `color-mix(in srgb, ${accentColor || "var(--accent)"} 60%, transparent)` : "transparent"}`,
+            color: accentColor || "var(--accent)",
+            fontSize: 10,
+            lineHeight: 1,
+            opacity: ungroupDropActive === "writing" ? 1 : 0,
+            pointerEvents: "auto",
+            transition: "opacity 100ms ease",
+          }}
+        >
+          Move out of group
+        </div>
+        <NavigatorSection title="Notes" group="notes" items={notes} activeId={activeId} selectedIds={selectedIds} protectedWritingBoardId={protectedWritingBoardId} onSelectBoard={onSelectBoard} getBoardLabel={getBoardLabel} onRenameBoard={onRenameBoard} onDuplicateBoard={onDuplicateBoard} onRenameGroup={onRenameGroup} onRequestDeleteBoard={(id, name, group) => setPendingDelete({ type: "board", id, name, group })} onRequestDeleteBoards={(ids, names, group) => setPendingDelete({ type: "boards", ids, names, group })} onGroupSelected={onGroupSelected} onUngroupSelected={onUngroupSelected} onToggleGroup={onToggleGroup} onMoveBoard={onMoveBoard} onMoveGroup={onMoveGroup} onSelectionChange={onSelectionChange} accentColor={accentColor} onAdd={() => onAddBoard("notes")} onOpenInMain={onOpenInMain} onOpenContextMenu={() => setContextMenuOwner("notes")} isContextMenuOwner={contextMenuOwner === "notes"} />
+        <div
+          role="presentation"
+          aria-label="Move board out of group"
+          data-sw-navigator-ungroup="notes"
+          onDragOver={(event) => {
+            if (!hasActiveNavigatorBoardDrag()) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+            setUngroupDropActive("notes");
+          }}
+          onDragLeave={(event) => {
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setUngroupDropActive((active) => active === "notes" ? null : active);
+          }}
+          onDrop={(event) => {
+            const payload = readNavigatorBoardDrag(event.dataTransfer);
+            if (!payload) return;
+            event.preventDefault();
+            event.stopPropagation();
+            onMoveBoard({
+              boardId: payload.boardId,
+              sourceGroup: payload.group,
+              targetGroup: payload.group,
+              targetId: null,
+              targetParentGroupId: null,
+              position: "after",
+            });
+            setUngroupDropActive(null);
+          }}
+          style={{
+            minHeight: 30,
+            paddingBottom: 8,
+            boxSizing: "border-box",
+            flex: "1 0 30px",
+            margin: "-9px 0 5px",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            borderTop: `1px ${ungroupDropActive === "notes" ? "dashed" : "solid"} ${ungroupDropActive === "notes" ? `color-mix(in srgb, ${accentColor || "var(--accent)"} 60%, transparent)` : "transparent"}`,
+            color: accentColor || "var(--accent)",
+            fontSize: 10,
+            lineHeight: 1,
+            opacity: ungroupDropActive === "notes" ? 1 : 0,
+            pointerEvents: "auto",
+            transition: "opacity 100ms ease",
+          }}
+        >
+          Move out of group
+        </div>
       </div>
     </section>
   );
@@ -362,11 +539,13 @@ function NavigatorSection({
   onDuplicateBoard,
   onRenameGroup,
   onRequestDeleteBoard,
+  onRequestDeleteBoards,
   onGroupSelected,
   onUngroupSelected,
   onSelectionChange,
   onToggleGroup,
   onMoveBoard,
+  onMoveGroup,
   accentColor,
   onAdd,
   onOpenInMain,
@@ -385,11 +564,13 @@ function NavigatorSection({
   onDuplicateBoard: (id: string, group: BoardGroup) => void;
   onRenameGroup: (id: string, group: BoardGroup, name: string) => void;
   onRequestDeleteBoard: (id: string, name: string, group: BoardGroup) => void;
+  onRequestDeleteBoards: (ids: string[], names: string[], group: BoardGroup) => void;
   onGroupSelected: (ids: string[], group: BoardGroup) => string | null;
   onUngroupSelected: (ids: string[], group: BoardGroup) => string[];
   onSelectionChange: (ids: string[]) => void;
   onToggleGroup: (id: string, group: BoardGroup) => void;
   onMoveBoard: Props["onMoveBoard"];
+  onMoveGroup: Props["onMoveGroup"];
   accentColor?: string;
   onAdd: () => void;
   onOpenInMain: Props["onOpenInMain"];
@@ -404,6 +585,8 @@ function NavigatorSection({
   const [contextMenuPosition, setContextMenuPosition] = React.useState<{ id: string; x: number; y: number } | null>(null);
   const contextMenuRef = React.useRef<HTMLDivElement>(null);
   const [dropMarkerY, setDropMarkerY] = React.useState<number | null>(null);
+  const [dropTargetGroupId, setDropTargetGroupId] = React.useState<string | null>(null);
+  const [draggingGroupId, setDraggingGroupId] = React.useState<string | null>(null);
   const sectionRef = React.useRef<HTMLElement>(null);
   const listRef = React.useRef<HTMLDivElement>(null);
   React.useLayoutEffect(() => {
@@ -469,20 +652,47 @@ function NavigatorSection({
     }
     setEditingBoardId(null);
   };
+  const selectedBoardItems = selectedIds.map(findEntry);
+  const canDeleteSelectedBoards = selectedIds.length > 1
+    && selectedBoardItems.every((item) => !!item && item.kind !== "group");
+  const sectionBoardIds = items.flatMap((item) => item.kind === "group"
+    ? (item.children || []).flatMap((child) => child.kind === "group" ? (child.children || []).map((nested) => nested.id) : [child.id])
+    : [item.id]);
+  const selectedDeleteBlocked = canDeleteSelectedBoards
+    ? group === "writing" && (selectedIds.includes(protectedWritingBoardId || "")
+      || (sectionBoardIds.length > 0 && sectionBoardIds.every((id) => selectedIds.includes(id))))
+    : group === "writing" && contextMenu?.id === protectedWritingBoardId;
 
   return (
     <section
       ref={sectionRef}
+      data-sw-navigator-group={group}
       style={{ position: "relative", marginBottom: 14, minHeight: 42 }}
       aria-label={title}
+      onDragOverCapture={(event) => {
+        // The insertion marker can sit a pixel beyond the list's box. Accept
+        // the drag at section level too, so those boundary pixels never show
+        // the browser's forbidden-drop cursor.
+        if (!hasActiveNavigatorBoardDrag() && !hasActiveNavigatorGroupDrag()) return;
+        event.preventDefault();
+        event.dataTransfer.dropEffect = "move";
+      }}
       onDragOver={(event) => {
-        if (!hasActiveNavigatorBoardDrag()) return;
+        if (!hasActiveNavigatorBoardDrag() && !hasActiveNavigatorGroupDrag()) return;
         event.preventDefault();
         event.dataTransfer.dropEffect = "move";
       }}
       onDrop={(event) => {
         const target = event.target as Element;
         if (target.closest("[data-navigator-item-id]")) return;
+        const groupPayload = readNavigatorGroupDrag(event.dataTransfer);
+        if (groupPayload && groupPayload.group === group) {
+          event.preventDefault();
+          event.stopPropagation();
+          onMoveGroup({ groupId: groupPayload.groupId, sourceGroup: groupPayload.group, targetGroup: group, targetId: null, position: "after" });
+          setDropMarkerY(null);
+          return;
+        }
         const payload = readNavigatorBoardDrag(event.dataTransfer);
         if (!payload) return;
         event.preventDefault();
@@ -528,8 +738,24 @@ function NavigatorSection({
           ref={listRef}
           role="list"
           style={{ position: "relative", display: "grid", gap: 2 }}
+          onDragOverCapture={(event) => {
+            // Accept valid Navigator drags across the whole list surface,
+            // including the narrow gaps at the top and bottom of each row.
+            // Otherwise the browser briefly shows its forbidden-drop cursor.
+            const groupPayload = readNavigatorGroupDrag(event.dataTransfer);
+            const boardPayload = readNavigatorBoardDrag(event.dataTransfer);
+            const canDrop = groupPayload
+              ? groupPayload.group === group
+              : !!boardPayload;
+            if (!canDrop) return;
+            event.preventDefault();
+            event.dataTransfer.dropEffect = "move";
+          }}
           onDragLeave={(event) => {
-            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDropMarkerY(null);
+            if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+              setDropMarkerY(null);
+              setDropTargetGroupId(null);
+            }
           }}
         >
           {visibleItems.map((item) => {
@@ -548,12 +774,36 @@ function NavigatorSection({
                 aria-current={active ? "true" : undefined}
                 aria-selected={selected}
                 title={label}
-                draggable={!isGroup}
+                draggable
                 onClick={(event) => onSelectBoard(item.id, event)}
                 onDragOver={(event) => {
+                  const groupPayload = readNavigatorGroupDrag(event.dataTransfer);
+                  if (groupPayload) {
+                    if (groupPayload.group !== group) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDropTargetGroupId(null);
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    const listBounds = listRef.current?.getBoundingClientRect();
+                    const before = event.clientY < bounds.top + bounds.height / 2;
+                    if (listBounds) {
+                      const rowIndex = visibleItems.findIndex((visibleItem) => visibleItem.id === item.id);
+                      const markerY = before
+                        ? bounds.top - (rowIndex > 0 ? 1 : 0)
+                        : bounds.bottom + (rowIndex < visibleItems.length - 1 ? 1 : 0);
+                      setDropMarkerY(markerY - listBounds.top);
+                    }
+                    return;
+                  }
                   if (!hasActiveNavigatorBoardDrag()) return;
                   event.preventDefault();
                   event.dataTransfer.dropEffect = "move";
+                  if (isGroup) {
+                    setDropTargetGroupId(item.id);
+                    setDropMarkerY(null);
+                    return;
+                  }
+                  setDropTargetGroupId(null);
                   const bounds = event.currentTarget.getBoundingClientRect();
                   const listBounds = listRef.current?.getBoundingClientRect();
                   const before = event.clientY < bounds.top + bounds.height / 2;
@@ -565,7 +815,31 @@ function NavigatorSection({
                     setDropMarkerY(markerY - listBounds.top);
                   }
                 }}
+                onDragLeave={(event) => {
+                  if (!event.currentTarget.contains(event.relatedTarget as Node | null)
+                    && (dropTargetGroupId === item.id || hasActiveNavigatorGroupDrag())) {
+                    setDropTargetGroupId(null);
+                    setDropMarkerY(null);
+                  }
+                }}
                 onDrop={(event) => {
+                  const groupPayload = readNavigatorGroupDrag(event.dataTransfer);
+                  if (groupPayload) {
+                    if (groupPayload.group !== group) return;
+                    event.preventDefault();
+                    event.stopPropagation();
+                    const bounds = event.currentTarget.getBoundingClientRect();
+                    onMoveGroup({
+                      groupId: groupPayload.groupId,
+                      sourceGroup: groupPayload.group,
+                      targetGroup: group,
+                      targetId: item.parentGroupId ?? item.id,
+                      position: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
+                    });
+                    setDropMarkerY(null);
+                    setDropTargetGroupId(null);
+                    return;
+                  }
                   const payload = readNavigatorBoardDrag(event.dataTransfer);
                   if (!payload) return;
                   event.preventDefault();
@@ -575,13 +849,21 @@ function NavigatorSection({
                     boardId: payload.boardId,
                     sourceGroup: payload.group,
                     targetGroup: group,
-                    targetId: item.id,
-                    targetParentGroupId: item.parentGroupId ?? null,
-                    position: event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
+                    targetId: isGroup ? null : item.id,
+                    targetParentGroupId: isGroup ? item.id : item.parentGroupId ?? null,
+                    position: isGroup ? "after" : event.clientY < bounds.top + bounds.height / 2 ? "before" : "after",
                   });
                   setDropMarkerY(null);
+                  setDropTargetGroupId(null);
                 }}
                 onDoubleClick={(event) => {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  if (isGroup) onToggleGroup(item.id, group);
+                  else onOpenInMain(item.id, item.group);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "F2" || editingBoardId === item.id) return;
                   event.preventDefault();
                   event.stopPropagation();
                   beginRename(item);
@@ -599,14 +881,21 @@ function NavigatorSection({
                   });
                 }}
                 onDragStart={(event) => {
-                  if (isGroup) { event.preventDefault(); return; }
-                  setDraggingBoardId(item.id);
-                  beginNavigatorBoardDrag(event.dataTransfer, { boardId: item.id, group: item.group });
+                  if (isGroup) {
+                    setDraggingGroupId(item.id);
+                    beginNavigatorGroupDrag(event.dataTransfer, { groupId: item.id, group: item.group });
+                  } else {
+                    setDraggingBoardId(item.id);
+                    beginNavigatorBoardDrag(event.dataTransfer, { boardId: item.id, group: item.group });
+                  }
                   event.currentTarget.style.opacity = ".55";
                 }}
                 onDragEnd={(event) => {
                   event.currentTarget.style.opacity = "1";
                   setDraggingBoardId(null);
+                  setDraggingGroupId(null);
+                  setDropTargetGroupId(null);
+                  setDropMarkerY(null);
                   endNavigatorBoardDrag();
                 }}
                 style={{
@@ -616,10 +905,16 @@ function NavigatorSection({
                   alignItems: "center",
                   gap: 6,
                   padding: `0 7px 0 ${item.parentGroupId ? 20 : 7}px`,
-                  border: selected ? `1px solid color-mix(in srgb, ${accent} 28%, transparent)` : "1px solid transparent",
-                  borderLeft: `2px solid ${selected ? `color-mix(in srgb, ${accent} 38%, transparent)` : "transparent"}`,
+                  border: dropTargetGroupId === item.id
+                    ? `1px solid color-mix(in srgb, ${accent} 62%, transparent)`
+                    : selected ? `1px solid color-mix(in srgb, ${accent} 28%, transparent)` : "1px solid transparent",
+                  borderLeft: `2px solid ${dropTargetGroupId === item.id
+                    ? `color-mix(in srgb, ${accent} 72%, transparent)`
+                    : selected ? `color-mix(in srgb, ${accent} 38%, transparent)` : "transparent"}`,
                   borderRadius: 3,
-                  background: selected
+                  background: dropTargetGroupId === item.id
+                    ? `color-mix(in srgb, ${accent} 16%, var(--bg))`
+                    : selected
                     ? `color-mix(in srgb, ${accent} 8%, var(--bg))`
                     : active ? `color-mix(in srgb, ${accent} 5%, transparent)` : "transparent",
                   color: active || selected ? "var(--text-1)" : "var(--text-muted)",
@@ -631,7 +926,7 @@ function NavigatorSection({
                   userSelect: "none",
                   touchAction: "none",
                   outline: "none",
-                  opacity: draggingBoardId === item.id ? 0.55 : 1,
+                  opacity: draggingBoardId === item.id || draggingGroupId === item.id ? 0.55 : 1,
                   cursor: isGroup ? "default" : draggingBoardId === item.id ? "grabbing" : "grab",
                 }}
               >
@@ -697,7 +992,7 @@ function NavigatorSection({
               </div>
             );
           })}
-          {dropMarkerY !== null && hasActiveNavigatorBoardDrag() && (
+          {dropMarkerY !== null && (hasActiveNavigatorBoardDrag() || hasActiveNavigatorGroupDrag()) && (
             <div
               aria-hidden="true"
               style={{
@@ -717,6 +1012,7 @@ function NavigatorSection({
       )}
       {isContextMenuOwner && contextMenu && findEntry(contextMenu.id) && createPortal((
         <div
+          data-sw-navigator-context-menu="1"
           ref={contextMenuRef}
           style={{
             position: "fixed",
@@ -726,12 +1022,19 @@ function NavigatorSection({
             zIndex: 10000, minWidth: 112, maxWidth: "calc(100vw - 16px)", padding: 4,
             border: "1px solid var(--border)", borderRadius: 5,
             background: "var(--bg)", boxShadow: "0 5px 16px rgba(0,0,0,.18)",
+            ["--sw-navigator-accent" as any]: accentColor || "var(--accent)",
           }}
           onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
         >
+          <style>{`
+            [data-sw-navigator-context-menu] .sw-navigator-context-menu-item:hover:not(:disabled) {
+              background: color-mix(in srgb, var(--sw-navigator-accent) 14%, transparent) !important;
+            }
+          `}</style>
           {findEntry(contextMenu.id)?.kind !== "group" && (
             <button
               type="button"
+              className="sw-navigator-context-menu-item"
               disabled={findEntry(contextMenu.id)?.isMain}
               onClick={() => {
                 const item = findEntry(contextMenu.id);
@@ -743,6 +1046,7 @@ function NavigatorSection({
           )}
           <button
             type="button"
+            className="sw-navigator-context-menu-item"
             onClick={() => {
               const item = findEntry(contextMenu.id);
               if (item) beginRename(item);
@@ -755,6 +1059,7 @@ function NavigatorSection({
           >Rename</button>
           {findEntry(contextMenu.id)?.kind !== "group" && <button
             type="button"
+            className="sw-navigator-context-menu-item"
             onClick={() => {
               const item = findEntry(contextMenu.id);
               setContextMenu(null);
@@ -765,6 +1070,7 @@ function NavigatorSection({
           {findEntry(contextMenu.id)?.kind === "group" ? (
             <button
               type="button"
+              className="sw-navigator-context-menu-item"
               onClick={() => {
                 const expanded = onUngroupSelected([contextMenu.id], group);
                 setContextMenu(null);
@@ -778,6 +1084,7 @@ function NavigatorSection({
           ) : (
             <button
               type="button"
+              className="sw-navigator-context-menu-item"
               disabled={!selectedIds.length || selectedIds.some((id) => !items.some((entry) => entry.kind !== "group" && entry.id === id))}
               onClick={() => {
                 const groupId = onGroupSelected(selectedIds, group);
@@ -790,17 +1097,23 @@ function NavigatorSection({
               style={{ ...contextMenuItemStyle, opacity: selectedIds.length && selectedIds.every((id) => items.some((entry) => entry.kind !== "group" && entry.id === id)) ? 1 : 0.45 }}
             >Group</button>
           )}
-          {findEntry(contextMenu.id)?.kind !== "group" && <button
+          {(canDeleteSelectedBoards || findEntry(contextMenu.id)?.kind !== "group") && <button
             type="button"
-            disabled={group === "writing" && contextMenu.id === protectedWritingBoardId}
+            className="sw-navigator-context-menu-item"
+            disabled={selectedDeleteBlocked}
             onClick={() => {
-              const item = findEntry(contextMenu.id);
-              if (item) onRequestDeleteBoard(item.id, getBoardLabel?.(item.id) || item.label, item.group);
+              if (canDeleteSelectedBoards) {
+                const selectedItems = selectedBoardItems.filter((item): item is NavigatorTextItem => !!item && item.kind !== "group");
+                onRequestDeleteBoards(selectedItems.map((item) => item.id), selectedItems.map((item) => getBoardLabel?.(item.id) || item.label), group);
+              } else {
+                const item = findEntry(contextMenu.id);
+                if (item) onRequestDeleteBoard(item.id, getBoardLabel?.(item.id) || item.label, item.group);
+              }
               setContextMenu(null);
             }}
-            title={group === "writing" && contextMenu.id === protectedWritingBoardId ? "At least one Writing board must remain" : undefined}
-            style={{ ...contextMenuItemStyle, marginTop: 3, borderTop: "1px solid var(--border)", borderRadius: 0, paddingTop: 8, opacity: group === "writing" && contextMenu.id === protectedWritingBoardId ? .45 : 1, cursor: group === "writing" && contextMenu.id === protectedWritingBoardId ? "default" : "pointer" }}
-          >Delete Board</button>}
+            title={selectedDeleteBlocked ? "At least one Writing board must remain" : undefined}
+            style={{ ...contextMenuItemStyle, marginTop: 3, borderTop: "1px solid var(--border)", borderRadius: 0, paddingTop: 8, opacity: selectedDeleteBlocked ? .45 : 1, cursor: selectedDeleteBlocked ? "default" : "pointer" }}
+          >{canDeleteSelectedBoards ? `Delete Selected Boards (${selectedIds.length})` : "Delete Board"}</button>}
         </div>
       ), document.body)}
     </section>

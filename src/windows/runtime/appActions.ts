@@ -11,7 +11,7 @@ import { emit } from "@tauri-apps/api/event";
 /* ---------- Types ---------- */
 type IO = {
   isDirty: () => boolean;
-  save: () => Promise<void | string | null>;
+  save: (options?: { createBackup?: boolean; autoSave?: boolean }) => Promise<void | string | null>;
   saveAs: (absPath?: string) => Promise<void | string | null>;
   open: () => Promise<void | string | null>;
   newFile: () => void | Promise<void>;
@@ -217,10 +217,10 @@ function dispatchProjectOpenState(event: "sw:project:opening" | "sw:project:open
 
 /* ---------- actions ---------- */
 
-export async function save(): Promise<string | null> {
+export async function save(options: { createBackup?: boolean; autoSave?: boolean } = {}): Promise<string | null> {
   const { io, hasBoundFileRef } = need();
   const before = _readGlobalPath() || currentFilePath;
-  const ret = await io.save(); // void | string | null
+  const ret = await io.save(options); // void | string | null
 
   const path =
     (typeof ret === "string" && ret) ||

@@ -1,4 +1,23 @@
-Splitwriter 2.0 Portable (Beta 4) — Windows x64
+Splitwriter 2.0 Plain (Portable) — Windows x64
+
+2.0 PLAIN RELEASE
+- Added rolling backups for changed manual saves (Ctrl+S and Save), keeping the
+  latest 10 snapshots per project in `_Backups`. Autosave remains separate and
+  does not consume the manual-save change state.
+- Standardized generated project subfolders as `_Backups` and `_Images`.
+- Added paragraph-indentation controls for display and plain-text copy/export,
+  including TextBoard and Manuscript View.
+- Improved plain-text copy, partial-selection indentation, and paste handling.
+- Improved Navigator group and board reordering, moving boards out of groups,
+  multi-board deletion, and drag feedback at narrow drop boundaries.
+- Kept the text caret stable when applying alignment from toolbar buttons, and
+  made Echo View start markers follow their paragraph and clear when it is
+  deleted.
+- Added the em dash shortcut (Alt+-) and updated the About shortcut guide.
+- Made the saved theme and accent settings apply reliably on startup.
+- Separated the v2 WebView2 data location from older Splitwriter versions.
+- Removed the unreliable native spell-check integration from the 2.0 beta.
+- Kept F12 and Ctrl+Shift+I DevTools available in this evaluation build.
 
 BETA 4 FIXES AND IMPROVEMENTS
 - Added board duplication from the Navigator context menu and Ctrl-drag pane
@@ -11,8 +30,6 @@ BETA 4 FIXES AND IMPROVEMENTS
   visible position, and kept the app window within the available screen area.
 - Added the middle dot (Alt+.) shortcut and refined the About shortcut guide.
 - Fixed paragraph indentation preset loading and preferences select typing.
-
-BETA 3 FIXES AND IMPROVEMENTS
 
 BETA 3 FIXES AND IMPROVEMENTS
 - Improved manuscript typography, paragraph spacing, indentation, and paste

@@ -10,6 +10,7 @@ import handleIcon from "../icons/handle.png";
 import { readNavigatorBoardDrag, type BoardGroup, type NavigatorBoardDrag } from "../boards/boardDrag";
 
 type LeafKind = "text" | "scenario" | "image" | "viewer" | "edit" | "navigator" | "manuscript";
+let activePaneHandleCancel: (() => void) | null = null;
 
 type Props = {
   leafId: string;
@@ -58,8 +59,26 @@ export default function LeafPane({
   const [dir, setDir] = useState<"horizontal" | "vertical" | null>(null);
   const swapTargetRef = React.useRef<string | null>(null);
   const swapTargetKindRef = React.useRef<string | null>(null);
+  const draggingRef = React.useRef(false);
+  const suppressContextMenuRef = React.useRef(false);
+  const cancelDragRef = React.useRef<() => void>(() => {});
   const duplicateModeRef = React.useRef(false);
   const [duplicateMode, setDuplicateMode] = useState(false);
+
+  const cancelDrag = React.useCallback(() => {
+    draggingRef.current = false;
+    activePaneHandleCancel = null;
+    setDragging(false);
+    setStart(null);
+    setDir(null);
+    swapTargetRef.current = null;
+    swapTargetKindRef.current = null;
+    duplicateModeRef.current = false;
+    setDuplicateMode(false);
+    onSwapTargetChange?.(null);
+    onDuplicateTargetChange?.(null);
+  }, [onSwapTargetChange, onDuplicateTargetChange]);
+  cancelDragRef.current = cancelDrag;
 
   const onDropNavigator = (event: React.DragEvent<HTMLDivElement>) => {
     if (!dropGroup) return;
@@ -74,6 +93,8 @@ export default function LeafPane({
   useEffect(() => {
     if (!dragging) return;
 
+    cancelDragRef.current = cancelDrag;
+
     const syncDuplicateMode = (enabled: boolean) => {
       const allowed = enabled && canDuplicate && (!swapTargetRef.current || swapTargetKindRef.current === "text" || swapTargetKindRef.current === "scenario");
       duplicateModeRef.current = allowed;
@@ -85,27 +106,43 @@ export default function LeafPane({
       if (!start) return;
       const p = { x: e.clientX, y: e.clientY };
       const targetEl = document.elementFromPoint(p.x, p.y)?.closest<HTMLElement>("[data-sw-leaf-id]");
-      const targetLeafId = targetEl?.dataset.swLeafId && targetEl.dataset.swLeafId !== leafId
-        ? targetEl.dataset.swLeafId
+      const hoveredOtherPane = !!targetEl?.dataset.swLeafId && targetEl.dataset.swLeafId !== leafId;
+      const targetLeafId = hoveredOtherPane && targetEl?.dataset.swLeafKind !== "manuscript"
+        ? targetEl?.dataset.swLeafId ?? null
         : null;
       swapTargetKindRef.current = targetLeafId ? targetEl?.dataset.swLeafKind || null : null;
       if (swapTargetRef.current !== targetLeafId) {
         swapTargetRef.current = targetLeafId;
         onSwapTargetChange?.(targetLeafId);
       }
-      syncDuplicateMode(e.ctrlKey);
+      syncDuplicateMode(e.ctrlKey && !hoveredOtherPane);
       const dx = p.x - start.x;
       const dy = p.y - start.y;
       const adx = Math.abs(dx);
       const ady = Math.abs(dy);
 
-      setDir(targetLeafId || (adx < 6 && ady < 6) ? null : ady > adx ? "horizontal" : "vertical");
+      setDir(hoveredOtherPane || targetLeafId || (adx < 6 && ady < 6) ? null : ady > adx ? "horizontal" : "vertical");
     };
 
     const onKeyDown = (event: KeyboardEvent) => { if (event.key === "Control") syncDuplicateMode(true); };
     const onKeyUp = (event: KeyboardEvent) => { if (event.key === "Control") syncDuplicateMode(false); };
+    const onContextMenuWhileDragging = (event: MouseEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      cancelDrag();
+    };
     const onUp = (event: MouseEvent) => {
+      if (event.button !== 0) {
+        if (event.button === 2) {
+          suppressContextMenuRef.current = true;
+          window.setTimeout(() => { suppressContextMenuRef.current = false; }, 0);
+        }
+        cancelDrag();
+        return;
+      }
       const duplicate = duplicateModeRef.current || (event.ctrlKey && canDuplicate && (!swapTargetRef.current || swapTargetKindRef.current === "text" || swapTargetKindRef.current === "scenario"));
+      draggingRef.current = false;
+      activePaneHandleCancel = null;
       setDragging(false);
       const targetLeafId = swapTargetRef.current;
       if (targetLeafId && duplicate) onRequestDuplicatePane?.(leafId, targetLeafId);
@@ -124,13 +161,16 @@ export default function LeafPane({
     window.addEventListener("mouseup", onUp, true);
     window.addEventListener("keydown", onKeyDown, true);
     window.addEventListener("keyup", onKeyUp, true);
+    window.addEventListener("contextmenu", onContextMenuWhileDragging, true);
     return () => {
       window.removeEventListener("mousemove", onMove, true);
       window.removeEventListener("mouseup", onUp, true);
       window.removeEventListener("keydown", onKeyDown, true);
       window.removeEventListener("keyup", onKeyUp, true);
+      window.removeEventListener("contextmenu", onContextMenuWhileDragging, true);
+      if (cancelDragRef.current === cancelDrag) cancelDragRef.current = () => {};
     };
-  }, [dragging, dir, leafId, canDuplicate, onRequestSplit, onRequestSwap, onRequestDuplicatePane, onSwapTargetChange, onDuplicateTargetChange, start]);
+  }, [dragging, dir, leafId, canDuplicate, onRequestSplit, onRequestSwap, onRequestDuplicatePane, onSwapTargetChange, onDuplicateTargetChange, start, cancelDrag]);
 
   // Drag hint overlay: draws a 2px guide line and a small "H"/"V" chip; pointer-events: none.
   const renderPreview = () => {
@@ -211,6 +251,13 @@ export default function LeafPane({
       data-sw-navigator-target={dropGroup ? "1" : undefined}
       data-sw-leaf-id={leafId}
       data-sw-leaf-kind={kind}
+      onContextMenuCapture={(event) => {
+        const cancelActiveDrag = activePaneHandleCancel;
+        if (!cancelActiveDrag) return;
+        event.preventDefault();
+        event.stopPropagation();
+        cancelActiveDrag();
+      }}
       onDragOverCapture={(event) => {
         if (!dropGroup) return;
         // Always accept over a board pane; DataTransfer payloads are hidden during dragover.
@@ -220,6 +267,13 @@ export default function LeafPane({
       onDropCapture={onDropNavigator}
       // Forward board-body context menu to parent with source="content".
       onContextMenu={(e) => {
+        if (draggingRef.current || suppressContextMenuRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+          suppressContextMenuRef.current = false;
+          cancelDragRef.current();
+          return;
+        }
         // Navigator owns its own item menus. Blank space, separators, and the
         // horizontal draft scroller must not fall through to the pane menu.
         if ((e.target as Element | null)?.closest?.('[data-sw-navigator-root]')) {
@@ -296,6 +350,8 @@ export default function LeafPane({
           // 좌클릭 드래그로만 split 시작
           if (e.button !== 0) return;
           e.stopPropagation();
+          draggingRef.current = true;
+          activePaneHandleCancel = cancelDragRef.current;
           setDragging(true);
           setStart({ x: e.clientX, y: e.clientY });
         }}

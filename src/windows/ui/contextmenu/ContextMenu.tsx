@@ -6,6 +6,7 @@ export type MenuItem = {
   label: string;
   onClick?: () => void;
   disabled?: boolean;
+  separator?: boolean;
 };
 
 type Props = {
@@ -58,7 +59,7 @@ export default function ContextMenu({ open, x, y, items, onClose, accentColor }:
   // 화면 밖 배치 방지
   const style = useMemo(() => {
     const pad = 8;
-    const w = 208, h = Math.max(36 * items.length + 12, 48);
+    const w = 208, h = Math.max(items.reduce((height, item) => height + (item.separator ? 10 : 36), 12), 48);
     const vw = window.innerWidth, vh = window.innerHeight;
     const left = Math.min(x, vw - w - pad);
     const top  = Math.min(y, vh - h - pad);
@@ -95,7 +96,7 @@ export default function ContextMenu({ open, x, y, items, onClose, accentColor }:
 
   const activeItem: React.CSSProperties = {
     background: "color-mix(in srgb, var(--accent) 18%, transparent)",
-    borderColor: "color-mix(in srgb, var(--accent) 55%, transparent)",
+    border: "1px solid color-mix(in srgb, var(--accent) 55%, transparent)",
     boxShadow: "none",                                            
   };
 
@@ -136,7 +137,8 @@ export default function ContextMenu({ open, x, y, items, onClose, accentColor }:
            onMouseDown={(e) => e.stopPropagation()}
            onPointerDown={(e) => e.stopPropagation()}>
         {items.map((it, i) => {
-          const isActive = i === active && !it.disabled;
+          if (it.separator) return <div key={`separator-${i}`} role="separator" style={{ height: 1, margin: "4px 10px", background: "var(--divider, var(--border))" }} />;
+          const isActive = i === active && !it.disabled && !it.separator;
           const style: React.CSSProperties = {
             ...baseItem,
             ...(isActive ? activeItem : null),
@@ -170,14 +172,14 @@ export default function ContextMenu({ open, x, y, items, onClose, accentColor }:
 function nextEnabledIndex(items: MenuItem[], start: number) {
   for (let i = 0; i < items.length; i++) {
     const idx = (start + i) % items.length;
-    if (!items[idx]?.disabled) return idx;
+    if (!items[idx]?.disabled && !items[idx]?.separator) return idx;
   }
   return -1;
 }
 function prevEnabledIndex(items: MenuItem[], start: number) {
   for (let i = 0; i < items.length; i++) {
     const idx = (start - i + items.length * 2) % items.length;
-    if (!items[idx]?.disabled) return idx;
+    if (!items[idx]?.disabled && !items[idx]?.separator) return idx;
   }
   return -1;
 }
