@@ -14,6 +14,12 @@
 
 Splitwriter is a free, offline writing workspace for novels, scripts, journals, and other creative projects. It brings writing and reference materials together in a flexible, distraction-light layout.
 
+## 한국어 소개
+
+Splitwriter는 소설, 시나리오 및 다양한 창작 활동을 위한 무료 오픈소스 글쓰기 프로그램입니다.
+Windows에서 별도의 설치 없이 사용할 수 있으며, 텍스트와 이미지를 자유롭게 배치하고 여러 문서를 하나의 원고로 구성할 수 있습니다.
+회원가입이나 클라우드 서비스 없이 오프라인 환경에서 모든 기능을 이용할 수 있습니다.
+
 ## Download — Splitwriter 2.0 Plain
 
 **Current release:** v2.0.0 · Portable · Windows x64
