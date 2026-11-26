@@ -1,12 +1,132 @@
 <!doctype html>
 <html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>TextBoard Tauri Sample</title>
-  </head>
-  <body>
-    <div id="root"></div>
-    <script type="module" src="/src/main.tsx"></script>
-  </body>
-</html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Splitwriter — Free Offline Writing Software for Windows</title>
+  <meta name="description" content="Splitwriter is a free, offline writing workspace for novels, scripts, journals, and creative projects. Write with text and image boards on Windows.">
+  <meta name="keywords" content="free novel writing software, offline writing app, Windows writing software, 소설 집필 프로그램, 무료 글쓰기 프로그램, 오프라인 글쓰기">
+  <meta name="author" content="Crom Kim">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="https://crom-foo.github.io/Splitwriter/">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="Splitwriter — A quiet workspace for big ideas">
+  <meta property="og:description" content="Free, offline writing software for Windows. Keep your writing and references together.">
+  <meta property="og:url" content="https://crom-foo.github.io/Splitwriter/">
+  <meta property="og:image" content="https://raw.githubusercontent.com/crom-foo/Splitwriter/main/assets/splitwriter-main-2.0.png">
+  <meta name="theme-color" content="#dfeaf2">
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Splitwriter",
+    "applicationCategory": "ProductivityApplication",
+    "operatingSystem": "Windows 10 or later",
+    "softwareVersion": "2.0.0",
+    "description": "A free, offline writing workspace for novels, scripts, journals, and creative projects.",
+    "url": "https://crom-foo.github.io/Splitwriter/",
+    "downloadUrl": "https://github.com/crom-foo/Splitwriter/releases/latest",
+    "license": "https://github.com/crom-foo/Splitwriter/blob/main/LICENSE",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+  <style>
+    :root{color-scheme:light;--ink:#263744;--muted:#667681;--paper:#f3f5f7;--panel:#fafbfd;--accent:#176b97;--accent-bright:#68aeca;--line:#d5dce3;--accent-soft:#e3edf2;--sky:#dfeaf2;--sea:#82b6cf;--asphalt:#414950;--asphalt-card:#4a535c;--asphalt-line:#606a74;--asphalt-text:#f2f4f6;--asphalt-muted:#c7cdd2;--rain-glint:#92c5d2;--lamp:#edbd72;--lamp-soft:#f8ebcf;--shadow:#21374612}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--paper);color:var(--ink);font:16px/1.65 "Segoe UI",system-ui,sans-serif}
+    a{color:inherit} .wrap{width:min(1120px,calc(100% - 40px));margin:auto}
+    header{padding:22px 0;border-bottom:1px solid var(--line);background:var(--sky);border-bottom-color:rgba(255,255,255,.96)}.nav{display:flex;align-items:center;justify-content:space-between;gap:20px}
+    .brand{font-weight:400;letter-spacing:.14em;font-size:.92rem;text-decoration:none;text-transform:uppercase;color:#405a6a;display:inline-flex;align-items:center}.navlinks{display:flex;gap:22px;align-items:center}.navlinks a{text-decoration:none;color:var(--muted);font-size:.92rem;transition:color .18s ease}.navlinks a:hover{color:var(--accent)}
+    .lang{border:1px solid var(--line);background:var(--panel);border-radius:999px;padding:7px 12px;color:var(--ink);cursor:pointer;transition:border-color .18s ease,color .18s ease}.lang:hover{border-color:var(--accent-bright);color:var(--accent)}
+    .hero{width:100vw;margin-left:calc(50% - 50vw);padding:78px max(20px,calc((100vw - 1120px)/2)) 82px;background:linear-gradient(180deg,var(--sky) 0 64%,#c9dce6 73%,#a6c7d7 82%,var(--sea) 88% 100%);display:grid;grid-template-columns:1fr .92fr;align-items:center;gap:48px}
+    .eyebrow{color:var(--accent);font-size:.8rem;letter-spacing:.14em;text-transform:uppercase;font-weight:700}
+    .hero-copy{width:100%;text-align:left}.hero-copy>.eyebrow,.hero-copy>h1{margin-left:0;padding-left:0;text-align:left}html[lang="en"] .hero-copy>.eyebrow{padding-left:4px}.hero .eyebrow{color:var(--ink);font-size:.96rem;letter-spacing:.01em;text-transform:none;font-weight:600}.hero .lead,.hero .fine{color:#2f505b}
+    h1{font-family:"Segoe UI",system-ui,sans-serif;font-weight:700;font-size:clamp(2.8rem,6vw,5.2rem);line-height:1.02;letter-spacing:-.055em;margin:14px 0 22px;max-width:650px}html[lang="ko"] .hero h1{font-size:clamp(2.1rem,4.4vw,3.6rem);line-height:1.12;letter-spacing:-.045em;word-break:keep-all}html[lang="ko"] h2{font-size:clamp(1.7rem,3.6vw,2.45rem);line-height:1.2;letter-spacing:-.04em;word-break:keep-all}
+    .lead{font-size:1.15rem;color:var(--muted);max-width:570px}.hero .lead{max-width:34rem;margin:0;line-height:1.55}.hero .actions{margin:22px 0 10px;gap:10px}
+    .actions{display:flex;gap:12px;flex-wrap:wrap;margin:28px 0 14px}.button{display:inline-flex;text-decoration:none;padding:13px 19px;border-radius:8px;font-weight:700;align-items:center;justify-content:center}
+    .primary{background:var(--lamp);color:#273944;box-shadow:0 3px 10px #a9742c2b;transition:transform .18s ease,box-shadow .18s ease}.primary:hover{transform:translateY(-1px);box-shadow:0 5px 14px #a9742c38}.secondary{border:1px solid var(--line);background:var(--panel);transition:border-color .18s ease,color .18s ease}.secondary:hover{border-color:#bdceda;color:var(--accent)}
+    .fine{color:var(--muted);font-size:.88rem}.hero .fine{display:inline-flex;align-items:center;max-width:100%;margin-top:2px;padding:7px 12px;border:1px solid rgba(255,255,255,.52);border-radius:999px;background:linear-gradient(105deg,rgba(250,252,253,.88),rgba(222,237,243,.78));color:#36515e;font-size:.84rem;line-height:1.4;box-shadow:0 2px 8px #2037460d}.hero img{width:100%;display:block;border-radius:12px;border:1px solid rgba(255,255,255,.7);box-shadow:0 14px 36px var(--shadow)}
+    section{padding:58px 0;border-top:1px solid var(--line)}#features{padding:68px 0 72px;width:100vw;margin-left:calc(50% - 50vw);background:linear-gradient(180deg,#293139 0%,var(--asphalt) 100%);border-top-color:#56616b;color:var(--asphalt-text)}#features .eyebrow{color:var(--lamp)}#features h2{color:var(--asphalt-text)}#features .intro{color:var(--asphalt-muted)}h2{font-family:"Segoe UI",system-ui,sans-serif;font-weight:700;font-size:clamp(1.8rem,4vw,2.7rem);letter-spacing:-.045em;line-height:1.12;margin:8px 0 18px}
+    .intro{max-width:710px;color:var(--muted);font-size:1.08rem;line-height:1.7}#features .intro{max-width:640px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:32px}
+    .card{background:var(--panel);border:1px solid var(--line);padding:22px;border-radius:12px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-1px);border-color:#bdcdd0;box-shadow:0 6px 18px var(--shadow)}.card h3{margin:0 0 8px;font-size:1.05rem}.card p{margin:0;color:var(--muted);font-size:.95rem}
+    #features .card{background:var(--asphalt-card);border-color:var(--asphalt-line)}#features .card:hover{border-color:#637782;box-shadow:0 8px 20px #10182025}#features .card h3{color:var(--asphalt-text)}#features .card p{color:var(--asphalt-muted)}
+    .split{display:grid;grid-template-columns:1fr 1fr;gap:72px;align-items:start}.split>div{max-width:500px}.split .eyebrow{margin-bottom:14px}.split .intro{max-width:44ch;margin:0}#about{background:var(--paper);padding:76px 0}#manual{padding:72px 0}.callout{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:30px}.callout .eyebrow{margin-bottom:14px}.callout h2{margin-top:8px}.callout p{line-height:1.65}.callout p{margin:0;color:var(--muted)}
+    footer{padding:28px 0 42px;color:var(--muted);font-size:.9rem}footer .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
+    [hidden]{display:none!important}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{transition:none!important;animation:none!important}}
+    @media(max-width:760px){.hero{grid-template-columns:1fr;padding:50px max(20px,calc((100vw - 1120px)/2)) 68px;gap:28px;background:linear-gradient(180deg,var(--sky) 0 46%,#c9dce6 56%,#a6c7d7 66%,var(--sea) 74% 100%)}.navlinks{gap:12px}.navlinks a{display:none}.cards{grid-template-columns:1fr}.split{grid-template-columns:1fr;gap:42px}#about,#manual{padding:52px 0}#features{padding:52px 0 58px}section{padding:42px 0}}
+  </style>
+</head>
+<body>
+<header><div class="wrap nav">
+  <a class="brand" href="#" aria-label="Splitwriter home">SPLITWRITER</a>
+  <nav class="navlinks" aria-label="Main navigation"><a href="#features">Features</a><a href="#about">About</a><a href="#manual">Manual</a><a href="https://github.com/crom-foo/Splitwriter">GitHub</a><button class="lang" id="langToggle" type="button" aria-label="한국어로 보기">한국어</button></nav>
+</div></header>
+<main>
+  <div class="wrap hero">
+    <div class="hero-copy">
+      <div class="eyebrow" data-en="For all creators — past, present, and future." data-ko="과거와 현재, 미래의 모든 창작자를 위해">For all creators — past, present, and future.</div>
+      <h1 data-en="Keep your story<br>in view." data-ko="이야기를 한눈에,<br>글쓰기는 자유롭게.">Keep your story<br>in view.</h1>
+      <p class="lead" data-en="A free, offline writing workspace for novels, scripts, journals, and the ideas in between." data-ko="소설, 시나리오, 일기와 다양한 창작을 위한 무료 오프라인 글쓰기 작업 공간입니다.">A free, offline writing workspace for novels, scripts, journals, and the ideas in between.</p>
+      <div class="actions"><a class="button primary" href="https://github.com/crom-foo/Splitwriter/releases/latest" data-en="Download for Windows" data-ko="Windows용 무료 다운로드">Download for Windows</a><a class="button secondary" href="https://github.com/crom-foo/Splitwriter" data-en="Explore on GitHub" data-ko="GitHub에서 보기">Explore on GitHub</a></div>
+      <div class="fine" data-en="Free · Windows 10+ · Portable ZIP · Works offline" data-ko="무료 · Windows 10 이상 · 포터블 ZIP · 오프라인 사용">Free · Windows 10+ · Portable ZIP · Works offline</div>
+    </div>
+    <img src="https://raw.githubusercontent.com/crom-foo/Splitwriter/main/assets/splitwriter-main-2.0.png" alt="Splitwriter 2.0 writing workspace showing text and image boards">
+  </div>
+  <section id="features"><div class="wrap">
+    <div class="eyebrow" data-en="Made for your process" data-ko="나만의 방식으로">Made for your process</div>
+    <h2 data-en="Writing and references, side by side." data-ko="글과 참고 자료를 한 공간에.">Writing and references, side by side.</h2>
+    <p class="intro" data-en="Arrange text boards and image references around the way you think. Gather multiple pieces into a manuscript, then read or export it when you’re ready." data-ko="텍스트 보드와 이미지 자료를 생각의 흐름에 맞게 배치하세요. 여러 문서를 원고로 엮고, 준비가 되면 읽거나 내보낼 수 있습니다.">Arrange text boards and image references around the way you think. Gather multiple pieces into a manuscript, then read or export it when you’re ready.</p>
+    <div class="cards">
+      <article class="card"><h3 data-en="A flexible workspace" data-ko="자유로운 작업 공간">A flexible workspace</h3><p data-en="Split, move, and arrange boards to keep the right material close." data-ko="보드를 나누고 옮기며 필요한 자료를 가까이 배치할 수 있습니다.">Split, move, and arrange boards to keep the right material close.</p></article>
+      <article class="card"><h3 data-en="Drafts & Manuscript View" data-ko="초안과 원고 보기">Drafts & Manuscript View</h3><p data-en="Explore board order separately, then read and export your combined writing." data-ko="보드 순서를 별도로 구성하고, 모아 쓴 글을 읽거나 내보내세요.">Explore board order separately, then read and export your combined writing.</p></article>
+      <article class="card"><h3 data-en="Private by design" data-ko="개인 작업을 위한 설계">Private by design</h3><p data-en="Your work stays on your computer. No account or cloud service is required." data-ko="작업물은 컴퓨터에 저장됩니다. 계정이나 클라우드 서비스가 필요하지 않습니다.">Your work stays on your computer. No account or cloud service is required.</p></article>
+    </div>
+  </div></section>
+  <section id="about"><div class="wrap split">
+    <div><div class="eyebrow">English</div><h2>For all creators — past, present, and future.</h2><p class="intro">Splitwriter is free, open-source writing software for Windows. It brings writing and reference materials together in a flexible, distraction-light layout for novels, scripts, journals, and creative projects.</p></div>
+    <div><div class="eyebrow">한국어</div><h2>창작의 모든 순간을 위한 글쓰기 도구</h2><p class="intro">Splitwriter는 소설, 시나리오 및 다양한 창작 활동을 위한 무료 오픈소스 글쓰기 프로그램입니다. 텍스트와 이미지를 자유롭게 배치하고 여러 문서를 하나의 원고로 구성할 수 있습니다. 회원가입이나 클라우드 서비스 없이 오프라인에서 사용할 수 있습니다.</p></div>
+  </div></section>
+  <section id="manual"><div class="wrap split">
+    <div><div class="eyebrow" data-en="Get started" data-ko="시작하기">Get started</div><h2 data-en="A portable app.<br>Your own files." data-ko="간편한 포터블 앱,<br>내 컴퓨터의 작업물.">A portable app.<br>Your own files.</h2><p class="intro" data-en="Download the ZIP, extract it, and run Splitwriter.exe. The app is free for personal and commercial creative work." data-ko="ZIP 파일을 내려받아 압축을 풀고 Splitwriter.exe를 실행하세요. 개인 및 상업적 창작 작업에 무료로 사용할 수 있습니다.">Download the ZIP, extract it, and run Splitwriter.exe. The app is free for personal and commercial creative work.</p><div class="actions"><a class="button primary" href="https://github.com/crom-foo/Splitwriter/releases/latest" data-en="Get the latest release" data-ko="최신 버전 다운로드">Get the latest release</a></div></div>
+    <div class="callout"><div class="eyebrow" id="manualLabel">Manuals</div><h2 data-en="Need a hand?" data-ko="사용법이 궁금하신가요?">Need a hand?</h2><p data-en="Read the guides, browse the source, or visit the project on GitHub." data-ko="사용 설명서를 읽고, 소스 코드를 살펴보거나 GitHub 프로젝트를 방문하세요.">Read the guides, browse the source, or visit the project on GitHub.</p><p style="margin-top:18px"><a href="https://github.com/crom-foo/Splitwriter/blob/main/docs/manual/Splitwriter-Manual-v2.0-English.pdf">English manual (PDF)</a> · <a href="https://github.com/crom-foo/Splitwriter/blob/main/docs/manual/Splitwriter-Manual-v2.0-Korean.pdf">한국어 매뉴얼 (PDF)</a></p><p style="margin-top:10px"><a href="https://github.com/crom-foo/Splitwriter">GitHub repository ↗</a></p></div>
+  </div></section>
+</main>
+<footer><div class="wrap foot"><span>© 2026 Splitwriter · MIT License</span><span>Created by Crom Kim & GPT · <a href="https://github.com/crom-foo/Splitwriter">GitHub</a></span></div></footer>
+<script>
+  const toggle=document.getElementById('langToggle');let korean=false;
+  toggle.addEventListener('click',()=>{korean=!korean;document.documentElement.lang=korean?'ko':'en';document.querySelectorAll('[data-en]').forEach(el=>{const value=el.dataset[korean?'ko':'en'];if(value)el.innerHTML=value});toggle.textContent=korean?'English':'한국어';toggle.setAttribute('aria-label',korean?'Switch to English':'한국어로 보기')});
+</script>
+</body></html>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
