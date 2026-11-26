@@ -10,6 +10,8 @@
 <h1 align="center">Splitwriter</h1>
 <p align="center"><em>For all creators — past, present, and future.</em></p>
 
+## Splitwriter – Free Novel Writing Software for Windows
+
 Splitwriter is a free, offline writing workspace for novels, scripts, journals, and other creative projects. It brings writing and reference materials together in a flexible, distraction-light layout.
 
 ## Download — Splitwriter 2.0 Plain
