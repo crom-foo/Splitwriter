@@ -10,15 +10,7 @@
 <h1 align="center">Splitwriter</h1>
 <p align="center"><em>For all creators — past, present, and future.</em></p>
 
-## Splitwriter – Free Novel Writing Software for Windows
-
 Splitwriter is a free, offline writing workspace for novels, scripts, journals, and other creative projects. It brings writing and reference materials together in a flexible, distraction-light layout.
-
-## 한국어 소개
-
-Splitwriter는 소설, 시나리오 및 다양한 창작 활동을 위한 무료 오픈소스 글쓰기 프로그램입니다.
-Windows에서 별도의 설치 없이 사용할 수 있으며, 텍스트와 이미지를 자유롭게 배치하고 여러 문서를 하나의 원고로 구성할 수 있습니다.
-회원가입이나 클라우드 서비스 없이 오프라인 환경에서 모든 기능을 이용할 수 있습니다.
 
 ## Download — Splitwriter 2.0 Plain
 
@@ -29,6 +21,14 @@ Windows에서 별도의 설치 없이 사용할 수 있으며, 텍스트와 이�
 - **UI language:** English
 - **Typing input:** System IME/keyboard support, with language options including 한국어, 日本語, 中文, Русский, and others
 - **Price:** Free for personal and commercial creative work
+
+## Quick Start
+
+1. Download and extract Splitwriter, then run `Splitwriter.exe`. No installation is required.
+2. Open **… → About** to review the shortcuts and available actions.
+3. Open **Preferences** to choose typefaces and writing behavior. Use **Presets** at the top of the Preferences window to save your settings for later.
+4. Write as much as you like.
+5. For important work, save often with **Ctrl+S** or the Save button. Splitwriter keeps up to 10 changed-project backups in the `_Backups` folder beside your project file.
 
 ## The Workspace
 
@@ -72,6 +72,25 @@ For the portable build:
 3. Run `Splitwriter.exe`.
 
 If the app does not start, check that the WebView2 Runtime is installed. This release is unsigned, so Windows SmartScreen may show a warning.
+
+## Raspberry Pi Test Build
+
+A Raspberry Pi test build is available for **64-bit ARM Linux** (`aarch64`). It is an early test build and is not yet covered by the Windows release support policy. Use a 64-bit Raspberry Pi OS image based on Bullseye or Ubuntu 22.04, with a desktop session and internet access for the initial build. The app uses the system WebKitGTK runtime.
+
+From the project directory on the Pi, install the native build dependencies and run the build script:
+
+```sh
+sudo apt update
+sudo apt install -y build-essential curl file wget patchelf libssl-dev librsvg2-dev \
+  libayatana-appindicator3-dev libwebkit2gtk-4.0-dev
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source "$HOME/.cargo/env"
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
+bash ./build-raspberry-pi.sh
+```
+
+The Debian package is written to `src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/`. Install it with `sudo apt install ./<package-name>.deb`. Share that package only with Raspberry Pi OS 64-bit testers; it will not run on 32-bit Pi OS or Windows. This build currently needs to be compiled on the Pi (or an equivalent ARM64 Linux machine).
 
 ## Project Files & Privacy
 
