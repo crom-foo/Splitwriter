@@ -73,25 +73,6 @@ For the portable build:
 
 If the app does not start, check that the WebView2 Runtime is installed. This release is unsigned, so Windows SmartScreen may show a warning.
 
-## Raspberry Pi Test Build
-
-A Raspberry Pi test build is available for **64-bit ARM Linux** (`aarch64`). It is an early test build and is not yet covered by the Windows release support policy. Use a 64-bit Raspberry Pi OS image based on Bullseye or Ubuntu 22.04, with a desktop session and internet access for the initial build. The app uses the system WebKitGTK runtime.
-
-From the project directory on the Pi, install the native build dependencies and run the build script:
-
-```sh
-sudo apt update
-sudo apt install -y build-essential curl file wget patchelf libssl-dev librsvg2-dev \
-  libayatana-appindicator3-dev libwebkit2gtk-4.0-dev
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source "$HOME/.cargo/env"
-curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-sudo apt install -y nodejs
-bash ./build-raspberry-pi.sh
-```
-
-The Debian package is written to `src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/`. Install it with `sudo apt install ./<package-name>.deb`. Share that package only with Raspberry Pi OS 64-bit testers; it will not run on 32-bit Pi OS or Windows. This build currently needs to be compiled on the Pi (or an equivalent ARM64 Linux machine).
-
 ## Project Files & Privacy
 
 Splitwriter uses the `.swon` project format, based on JSON. Writing and project layout are stored locally. Image boards refer to image files by path, so those files may need relinking if moved.
@@ -110,3 +91,4 @@ Support is optional. Thank you for using Splitwriter.
 
 If it helped you, you can buy me a coffee ☕  
 PayPal: [paypal.me/splitwriter](https://paypal.me/splitwriter)
+
