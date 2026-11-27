@@ -49,7 +49,7 @@
     .intro{max-width:710px;color:var(--muted);font-size:1.08rem;line-height:1.7}#features .intro{max-width:640px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:32px}
     .card{background:var(--panel);border:1px solid var(--line);padding:22px;border-radius:12px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-1px);border-color:#bdcdd0;box-shadow:0 6px 18px var(--shadow)}.card h3{margin:0 0 8px;font-size:1.05rem}.card p{margin:0;color:var(--muted);font-size:.95rem}
     #features .card{background:var(--asphalt-card);border-color:var(--asphalt-line)}#features .card:hover{border-color:#637782;box-shadow:0 8px 20px #10182025}#features .card h3{color:var(--asphalt-text)}#features .card p{color:var(--asphalt-muted)}
-    .split{display:grid;grid-template-columns:1fr 1fr;gap:72px;align-items:start}.split>div{max-width:500px}.split .eyebrow{margin-bottom:14px}.split .intro{max-width:44ch;margin:0}#about{background:var(--paper);padding:76px 0}#manual{padding:72px 0}.callout{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:30px}.callout .eyebrow{margin-bottom:14px}.callout h2{margin-top:8px}.callout p{line-height:1.65}.callout p{margin:0;color:var(--muted)}
+    .quick-steps{list-style:none;counter-reset:quick;display:grid;gap:12px;padding:0;margin:28px 0 0;max-width:850px}.quick-steps li{counter-increment:quick;display:grid;grid-template-columns:42px 1fr;align-items:start;gap:14px;background:var(--panel);border:1px solid var(--line);padding:16px 18px;border-radius:10px;color:var(--ink)}.quick-steps li:before{content:counter(quick);display:grid;place-items:center;width:30px;height:30px;border-radius:50%;background:var(--accent-soft);color:var(--accent);font-weight:700}\n    .split{display:grid;grid-template-columns:1fr 1fr;gap:72px;align-items:start}.split>div{max-width:500px}.split .eyebrow{margin-bottom:14px}.split .intro{max-width:44ch;margin:0}#about{background:var(--paper);padding:76px 0}#manual{padding:72px 0}.callout{background:var(--panel);border:1px solid var(--line);border-radius:16px;padding:30px}.callout .eyebrow{margin-bottom:14px}.callout h2{margin-top:8px}.callout p{line-height:1.65}.callout p{margin:0;color:var(--muted)}
     footer{padding:28px 0 42px;color:var(--muted);font-size:.9rem}footer .foot{display:flex;justify-content:space-between;gap:20px;flex-wrap:wrap}
     [hidden]{display:none!important}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}*,*:before,*:after{transition:none!important;animation:none!important}}
     @media(max-width:760px){.hero{grid-template-columns:1fr;padding:50px max(20px,calc((100vw - 1120px)/2)) 68px;gap:28px;background:linear-gradient(180deg,var(--sky) 0 46%,#c9dce6 56%,#a6c7d7 66%,var(--sea) 74% 100%)}.navlinks{gap:12px}.navlinks a{display:none}.cards{grid-template-columns:1fr}.split{grid-template-columns:1fr;gap:42px}#about,#manual{padding:52px 0}#features{padding:52px 0 58px}section{padding:42px 0}}
@@ -58,7 +58,7 @@
 <body>
 <header><div class="wrap nav">
   <a class="brand" href="#" aria-label="Splitwriter home">SPLITWRITER</a>
-  <nav class="navlinks" aria-label="Main navigation"><a href="#features">Features</a><a href="#about">About</a><a href="#manual">Manual</a><a href="https://github.com/crom-foo/Splitwriter">GitHub</a><button class="lang" id="langToggle" type="button" aria-label="한국어로 보기">한국어</button></nav>
+  <nav class="navlinks" aria-label="Main navigation"><a href="#quick-start" data-en="Quick Start" data-ko="빠른 시작">Quick Start</a><a href="#features">Features</a><a href="#about">About</a><a href="#manual">Manual</a><a href="https://github.com/crom-foo/Splitwriter">GitHub</a><button class="lang" id="langToggle" type="button" aria-label="한국어로 보기">한국어</button></nav>
 </div></header>
 <main>
   <div class="wrap hero">
@@ -71,6 +71,17 @@
     </div>
     <img src="https://raw.githubusercontent.com/crom-foo/Splitwriter/main/assets/splitwriter-main-2.0.png" alt="Splitwriter 2.0 writing workspace showing text and image boards">
   </div>
+  <section id="quick-start"><div class="wrap">
+    <div class="eyebrow" data-en="Quick Start" data-ko="빠른 시작">Quick Start</div>
+    <h2 data-en="Start writing in a few steps." data-ko="몇 단계만 따라 바로 써보세요.">Start writing in a few steps.</h2>
+    <ol class="quick-steps">
+      <li data-en="Download the portable ZIP, extract it, and run Splitwriter.exe. No installation is required." data-ko="포터블 ZIP을 내려받아 압축을 푼 뒤 Splitwriter.exe를 실행하세요. 설치할 필요가 없습니다.">Download the portable ZIP, extract it, and run Splitwriter.exe. No installation is required.</li>
+      <li data-en="Open … → About to review shortcuts and available actions." data-ko="‘… → About’에서 단축키와 사용할 수 있는 동작을 확인하세요.">Open … → About to review shortcuts and available actions.</li>
+      <li data-en="In Preferences, choose typefaces and writing behavior. Save your finished settings using Presets at the top of the Preferences window." data-ko="Preferences에서 서체와 글쓰기 동작을 설정하세요. 설정을 마친 뒤 창 상단의 Presets에서 저장할 수 있습니다.">In Preferences, choose typefaces and writing behavior. Save your finished settings using Presets at the top of the Preferences window.</li>
+      <li data-en="Start writing." data-ko="마음껏 적으세요.">Start writing.</li>
+      <li data-en="For important work, save often with Ctrl+S or the Save button. Up to 10 changed-project backups are kept in a _Backups folder beside your project. Autosave works separately." data-ko="중요한 글은 Ctrl+S 또는 Save 버튼으로 자주 저장해 주세요. 변경된 프로젝트의 백업은 최대 10개까지 프로젝트 파일 옆의 _Backups 폴더에 보관됩니다. Autosave는 별도로 작동합니다.">For important work, save often with Ctrl+S or the Save button. Up to 10 changed-project backups are kept in a _Backups folder beside your project. Autosave works separately.</li>
+    </ol>
+  </div></section>
   <section id="features"><div class="wrap">
     <div class="eyebrow" data-en="Made for your process" data-ko="나만의 방식으로">Made for your process</div>
     <h2 data-en="Writing and references, side by side." data-ko="글과 참고 자료를 한 공간에.">Writing and references, side by side.</h2>
@@ -96,6 +107,7 @@
   toggle.addEventListener('click',()=>{korean=!korean;document.documentElement.lang=korean?'ko':'en';document.querySelectorAll('[data-en]').forEach(el=>{const value=el.dataset[korean?'ko':'en'];if(value)el.innerHTML=value});toggle.textContent=korean?'English':'한국어';toggle.setAttribute('aria-label',korean?'Switch to English':'한국어로 보기')});
 </script>
 </body></html>
+
 
 
 
