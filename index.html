@@ -107,7 +107,7 @@
 <footer><div class="wrap foot"><span>© 2026 Splitwriter · MIT License</span><span>Created by Crom Kim & GPT · <a href="https://github.com/crom-foo/Splitwriter">GitHub</a></span></div></footer>
 <script>
   const toggle=document.getElementById('langToggle');let korean=false;
-  toggle.addEventListener('click',()=>{korean=!korean;document.documentElement.lang=korean?'ko':'en';document.querySelectorAll('[data-en]').forEach(el=>{const value=el.dataset[korean?'ko':'en'];if(value)el.innerHTML=value});toggle.innerHTML=korean?'English':'<strong>한국어</strong>';toggle.setAttribute('aria-label',korean?'Switch to English':'한국어로 보기')});
+  toggle.addEventListener('click',()=>{korean=!korean;document.documentElement.lang=korean?'ko':'en';document.querySelectorAll('[data-en]').forEach(el=>{const value=el.dataset[korean?'ko':'en'];if(value)el.innerHTML=value});toggle.innerHTML=korean?'<strong>English</strong>':'<strong>한국어</strong>';toggle.setAttribute('aria-label',korean?'Switch to English':'한국어로 보기')});
 </script>
 </body></html>
 
