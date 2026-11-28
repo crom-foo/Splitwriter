@@ -18,6 +18,8 @@ Splitwriter is a free, offline writing workspace for novels, scripts, journals, 
 
 [**Download Splitwriter for Windows x64**](https://github.com/crom-foo/Splitwriter/releases/latest)
 
+**Raspberry Pi ARM64 Pilot:** [Download for 64-bit Raspberry Pi OS](https://github.com/crom-foo/Splitwriter/releases/tag/v2.0.0-pilot.1) · Early test build; hardware compatibility is not yet verified.
+
 - **UI language:** English
 - **Typing input:** System IME/keyboard support, with language options including 한국어, 日本語, 中文, Русский, and others
 - **Price:** Free for personal and commercial creative work
@@ -73,6 +75,18 @@ For the portable build:
 
 If the app does not start, check that the WebView2 Runtime is installed. This release is unsigned, so Windows SmartScreen may show a warning.
 
+## Raspberry Pi Test Build
+
+A Raspberry Pi test build targets **64-bit ARM Linux** (`aarch64`). It is an early test build and is not yet covered by the Windows release support policy. Use 64-bit Raspberry Pi OS with a desktop session; the app uses the system WebKitGTK runtime.
+
+Build on the Pi itself or cross-compile from Windows using WSL2 with Ubuntu 22.04. The WSL cross-build setup and QEMU smoke-test steps are in [the Raspberry Pi build guide](docs/raspberry-pi-build.md). After installing the required host and ARM64 dependencies, run this from the project directory:
+
+```sh
+bash ./build-raspberry-pi.sh
+```
+
+The Debian package is written to `src-tauri/target/aarch64-unknown-linux-gnu/release/bundle/deb/`. Install it with `sudo apt install ./<package-name>.deb`. It will not run on 32-bit Pi OS or Windows.
+
 ## Project Files & Privacy
 
 Splitwriter uses the `.swon` project format, based on JSON. Writing and project layout are stored locally. Image boards refer to image files by path, so those files may need relinking if moved.
@@ -91,4 +105,3 @@ Support is optional. Thank you for using Splitwriter.
 
 If it helped you, you can buy me a coffee ☕  
 PayPal: [paypal.me/splitwriter](https://paypal.me/splitwriter)
-
