@@ -3,15 +3,15 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Splitwriter — Free Offline Writing Software for Windows</title>
-  <meta name="description" content="Splitwriter is a free, offline writing workspace for novels, scripts, journals, and creative projects. Write with text and image boards on Windows.">
-  <meta name="keywords" content="free novel writing software, offline writing app, Windows writing software, 소설 집필 프로그램, 무료 글쓰기 프로그램, 오프라인 글쓰기">
+  <title>Splitwriter — Free Offline Writing Software for Windows &amp; Raspberry Pi ARM64 Pilot</title>
+  <meta name="description" content="Splitwriter is a free, offline writing workspace for novels, scripts, journals, and creative projects. Available for Windows, with an ARM64 pilot for 64-bit Raspberry Pi OS.">
+  <meta name="keywords" content="free novel writing software, offline writing app, Windows writing software, Raspberry Pi writing software, Raspberry Pi OS, ARM64, aarch64, Linux, Debian, 소설 집필 프로그램, 무료 글쓰기 프로그램, 오프라인 글쓰기">
   <meta name="author" content="Crom Kim">
   <meta name="robots" content="index,follow">
   <link rel="canonical" href="https://crom-foo.github.io/Splitwriter/">
   <meta property="og:type" content="website">
-  <meta property="og:title" content="Splitwriter — A quiet workspace for big ideas">
-  <meta property="og:description" content="Free, offline writing software for Windows. Keep your writing and references together.">
+  <meta property="og:title" content="Splitwriter — Offline writing for Windows and Raspberry Pi ARM64 pilot">
+  <meta property="og:description" content="Free offline writing software for Windows, with an ARM64 pilot build for 64-bit Raspberry Pi OS.">
   <meta property="og:url" content="https://crom-foo.github.io/Splitwriter/">
   <meta property="og:image" content="https://raw.githubusercontent.com/crom-foo/Splitwriter/main/assets/splitwriter-main-2.0.png">
   <meta name="theme-color" content="#dfeaf2">
@@ -21,7 +21,7 @@
     "@type": "SoftwareApplication",
     "name": "Splitwriter",
     "applicationCategory": "ProductivityApplication",
-    "operatingSystem": "Windows 10 or later",
+    "operatingSystem": "Windows 10 or later; 64-bit Raspberry Pi OS (ARM64 pilot)",
     "softwareVersion": "2.0.0",
     "description": "A free, offline writing workspace for novels, scripts, journals, and creative projects.",
     "url": "https://crom-foo.github.io/Splitwriter/",
@@ -44,7 +44,7 @@
     .lead{font-size:1.15rem;color:var(--muted);max-width:570px}.hero .lead{max-width:34rem;margin:0;line-height:1.55}.hero .actions{margin:22px 0 10px;gap:10px}
     .actions{display:flex;gap:12px;flex-wrap:wrap;margin:28px 0 14px}.button{display:inline-flex;text-decoration:none;padding:13px 19px;border-radius:8px;font-weight:700;align-items:center;justify-content:center}
     .primary{background:var(--lamp);color:#273944;box-shadow:0 3px 10px #a9742c2b;transition:transform .18s ease,box-shadow .18s ease}.primary:hover{transform:translateY(-1px);box-shadow:0 5px 14px #a9742c38}.secondary{border:1px solid var(--line);background:var(--panel);transition:border-color .18s ease,color .18s ease}.secondary:hover{border-color:#bdceda;color:var(--accent)}
-    .fine{color:var(--muted);font-size:.88rem}.hero .fine{display:inline-flex;align-items:center;max-width:100%;margin-top:2px;padding:7px 12px;border:1px solid rgba(255,255,255,.52);border-radius:999px;background:linear-gradient(105deg,rgba(250,252,253,.88),rgba(222,237,243,.78));color:#36515e;font-size:.84rem;line-height:1.4;box-shadow:0 2px 8px #2037460d}.hero img{width:100%;display:block;border-radius:12px;border:1px solid rgba(255,255,255,.7);box-shadow:0 14px 36px var(--shadow)}
+    .fine{color:var(--muted);font-size:.88rem}.hero .fine{display:inline-flex;align-items:center;max-width:100%;margin-top:2px;padding:7px 12px;border:1px solid rgba(255,255,255,.52);border-radius:999px;background:linear-gradient(105deg,rgba(250,252,253,.88),rgba(222,237,243,.78));color:#36515e;font-size:.84rem;line-height:1.4;box-shadow:0 2px 8px #2037460d}.pilot-link{display:inline-block;margin-top:10px;color:var(--ink);font-size:.96rem;font-weight:650;text-decoration-color:var(--accent-bright);text-underline-offset:3px}.hero img{width:100%;display:block;border-radius:12px;border:1px solid rgba(255,255,255,.7);box-shadow:0 14px 36px var(--shadow)}
     section{padding:58px 0;border-top:1px solid var(--line)}#features{padding:68px 0 72px;width:100vw;margin-left:calc(50% - 50vw);background:linear-gradient(180deg,#293139 0%,var(--asphalt) 100%);border-top-color:#56616b;color:var(--asphalt-text)}#features .eyebrow{color:var(--lamp)}#features h2{color:var(--asphalt-text)}#features .intro{color:var(--asphalt-muted)}h2{font-family:"Segoe UI",system-ui,sans-serif;font-weight:700;font-size:clamp(1.8rem,4vw,2.7rem);letter-spacing:-.045em;line-height:1.12;margin:8px 0 18px}
     .intro{max-width:710px;color:var(--muted);font-size:1.08rem;line-height:1.7}#features .intro{max-width:640px}.cards{display:grid;grid-template-columns:repeat(3,1fr);gap:16px;margin-top:32px}
     .card{background:var(--panel);border:1px solid var(--line);padding:22px;border-radius:12px;transition:transform .2s ease,border-color .2s ease,box-shadow .2s ease}.card:hover{transform:translateY(-1px);border-color:#bdcdd0;box-shadow:0 6px 18px var(--shadow)}.card h3{margin:0 0 8px;font-size:1.05rem}.card p{margin:0;color:var(--muted);font-size:.95rem}
@@ -70,6 +70,7 @@
       <p class="lead" data-en="A free, offline writing workspace for novels, scripts, journals, and the ideas in between." data-ko="소설, 시나리오, 일기와 다양한 창작을 위한 무료 오프라인 글쓰기 작업 공간입니다.">A free, offline writing workspace for novels, scripts, journals, and the ideas in between.</p>
       <div class="actions"><a class="button primary" href="https://github.com/crom-foo/Splitwriter/releases/latest" data-en="Download for Windows" data-ko="Windows용 무료 다운로드">Download for Windows</a><a class="button secondary" href="https://github.com/crom-foo/Splitwriter" data-en="Explore on GitHub" data-ko="GitHub에서 보기">Explore on GitHub</a></div>
       <div class="fine" data-en="UI in English · Free · Windows 10+ · Portable ZIP · Works offline" data-ko="UI: 영어 · 무료 · Windows 10 이상 · 포터블 ZIP · 오프라인 사용">UI in English · Free · Windows 10+ · Portable ZIP · Works offline</div>
+      <a class="pilot-link" href="https://github.com/crom-foo/Splitwriter/releases/tag/v2.0.0-pilot.1" data-en="Raspberry Pi ARM64 Pilot — 64-bit Raspberry Pi OS" data-ko="라즈베리파이 ARM64 Pilot — 64비트 Raspberry Pi OS">Raspberry Pi ARM64 Pilot — 64-bit Raspberry Pi OS</a>
     </div>
     <img src="https://raw.githubusercontent.com/crom-foo/Splitwriter/main/assets/splitwriter-main-2.0.png" alt="Splitwriter 2.0 writing workspace showing text and image boards">
   </div>
@@ -105,8 +106,8 @@
 </main>
 <footer><div class="wrap foot"><span>© 2026 Splitwriter · MIT License</span><span>Created by Crom Kim & GPT · <a href="https://github.com/crom-foo/Splitwriter">GitHub</a></span></div></footer>
 <script>
-  const toggle=document.getElementById('langToggle');let korean=false;
-  toggle.addEventListener('click',()=>{korean=!korean;document.documentElement.lang=korean?'ko':'en';document.querySelectorAll('[data-en]').forEach(el=>{const value=el.dataset[korean?'ko':'en'];if(value)el.innerHTML=value});toggle.textContent=korean?'English':'한국어';toggle.setAttribute('aria-label',korean?'Switch to English':'한국어로 보기')});
+  const toggle=document.getElementById(''langToggle'');let korean=false;
+  toggle.addEventListener(''click'',()=>{korean=!korean;document.documentElement.lang=korean?''ko'':''en'';document.querySelectorAll(''[data-en]'').forEach(el=>{const value=el.dataset[korean?''ko'':''en''];if(value)el.innerHTML=value});toggle.textContent=korean?''English'':''한국어'';toggle.setAttribute(''aria-label'',korean?''Switch to English'':''한국어로 보기'')});
 </script>
 </body></html>
 
